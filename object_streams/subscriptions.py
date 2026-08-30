@@ -10,13 +10,30 @@ from enum import StrEnum
 from typing import Any
 
 
-__all__ = ("SubscriptionKind", "SubscriptionRequest")
+__all__ = ("ResyncRequired", "SubscriptionKind", "SubscriptionRequest")
 
 
 class SubscriptionKind(StrEnum):
     OBJECT = "object"
     FILTER = "filter"
     MODEL = "model"
+
+
+@dataclass(frozen=True, slots=True)
+class ResyncRequired:
+    """Subscription-level message for cases where precise replay is unavailable."""
+
+    subscription_id: str
+    cursor: int
+    reason: str = "cursor_replay_unavailable"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "type": "resync_required",
+            "subscription_id": self.subscription_id,
+            "cursor": self.cursor,
+            "reason": self.reason,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +58,12 @@ class SubscriptionRequest:
         object.__setattr__(self, "shape", dict(self.shape))
         if self.pk is not None:
             object.__setattr__(self, "pk", str(self.pk))
+        if self.cursor is not None:
+            cursor = int(self.cursor)
+            if cursor < 0:
+                msg = "Subscription cursors must be non-negative."
+                raise ValueError(msg)
+            object.__setattr__(self, "cursor", cursor)
         if kind == SubscriptionKind.OBJECT and self.pk is None:
             msg = "Object subscriptions require a primary key."
             raise ValueError(msg)

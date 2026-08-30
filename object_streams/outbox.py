@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
+from django.db import models
 from django.db import transaction
 
 from object_streams.events import ObjectRef
@@ -12,7 +13,18 @@ from object_streams.events import StreamEvent
 from object_streams.models import ObjectStreamEvent
 
 
-__all__ = ("create_outbox_event", "enqueue_outbox_event")
+__all__ = (
+    "create_outbox_event",
+    "enqueue_outbox_event",
+    "latest_outbox_cursor",
+    "outbox_events_after",
+)
+
+
+def _model_label(model: type[models.Model] | str) -> str:
+    if isinstance(model, str):
+        return model
+    return model._meta.label
 
 
 def _content_type_for_model_label(model_label: str) -> ContentType:
@@ -69,3 +81,34 @@ def enqueue_outbox_event(event: StreamEvent, *, using: str | None = None) -> Non
     """Write an event after the current database transaction commits."""
 
     transaction.on_commit(lambda: create_outbox_event(event), using=using)
+
+
+def latest_outbox_cursor() -> int:
+    """Return the latest global outbox cursor, or 0 when the outbox is empty."""
+
+    return ObjectStreamEvent.objects.order_by("-id").values_list("id", flat=True).first() or 0
+
+
+def outbox_events_after(
+    cursor: int,
+    *,
+    model: type[models.Model] | str | None = None,
+    subject: ObjectRef | None = None,
+    through_cursor: int | None = None,
+    limit: int | None = None,
+) -> models.QuerySet:
+    """Return outbox rows after a cursor, optionally scoped to a model or subject."""
+
+    queryset = ObjectStreamEvent.objects.filter(id__gt=cursor).order_by("id")
+    if through_cursor is not None:
+        queryset = queryset.filter(id__lte=through_cursor)
+    if subject is not None:
+        queryset = queryset.filter(
+            subject_content_type=_content_type_for_model_label(subject.model),
+            subject_object_id=subject.pk,
+        )
+    elif model is not None:
+        queryset = queryset.filter(subject_content_type=_content_type_for_model_label(_model_label(model)))
+    if limit is not None:
+        return queryset[:limit]
+    return queryset

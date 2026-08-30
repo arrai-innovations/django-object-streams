@@ -32,6 +32,8 @@ def apply_filterset(
     """Apply a django-filter compatible FilterSet class to a queryset."""
 
     if filterset_class is None:
+        if data:
+            raise FilterValidationError({"filter": "Filters are not supported for this model."})
         return queryset
 
     filterset = filterset_class(data=dict(data or {}) or None, queryset=queryset, request=request)
