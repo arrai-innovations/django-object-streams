@@ -1,0 +1,73 @@
+line-length = 120
+target-version = "py311"
+extend-exclude = [
+    ".git",
+    ".idea",
+    ".uv-cache",
+    ".venv",
+    "build",
+    "dist",
+    "htmlcov",
+]
+force-exclude = true
+
+[lint]
+select = [
+    "A",
+    "B0",
+    "C4",
+    "C90",
+    "DJ",
+    "E",
+    "W",
+    "F",
+    "FIX",
+    "G",
+    "I",
+    "INP",
+    "N",
+    "PLC",
+    "PLE",
+    "PLR2004",
+    "Q",
+    "RUF",
+    "SIM",
+    "T10",
+    "T20",
+    "TID",
+    "UP",
+]
+ignore = [
+    "E501",
+    "FIX002",
+    "N818",
+    "PLC0415",
+    "RUF005",
+    "RUF012",
+    "RUF021",
+    "SIM108",
+    "UP017",
+]
+
+[lint.per-file-ignores]
+"tests/*" = [
+    "DJ008",
+    "SIM",
+]
+"tests/testapp/*" = [
+    "DJ008",
+]
+"object_streams/migrations/*" = [
+    "N806",
+]
+
+[lint.isort]
+known-first-party = [
+    "object_streams",
+    "tests",
+]
+force-single-line = true
+lines-after-imports = 2
+
+[lint.mccabe]
+max-complexity = 20
