@@ -8,6 +8,7 @@ from object_streams.events import ObjectRef
 from object_streams.events import StreamEvent
 from object_streams.outbox import create_outbox_event
 from object_streams.registry import ObjectStreamRegistry
+from object_streams.retention import prune_outbox
 from object_streams.sessions import AsyncSubscriptionSession
 from tests.testapp.models import Note
 
@@ -199,3 +200,38 @@ def test_async_session_object_replay_sends_subject_events_after_cursor():
             "fetch": True,
         }
     ]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_async_object_replay_resyncs_when_the_cursor_was_pruned():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    note = Note.objects.create(title="Open")
+    rows = [
+        create_outbox_event(
+            StreamEvent(subject=ObjectRef.from_instance(note), op=EventOperation.UPDATED),
+            notify=False,
+        )
+        for _ in range(3)
+    ]
+    prune_outbox(max_rows=1)
+    session = make_session(registry)
+
+    subscription = async_to_sync(session.subscribe)(
+        {
+            "op": "subscribe",
+            "kind": "object",
+            "model": "testapp.Note",
+            "pk": note.pk,
+            "cursor": rows[0].pk,
+        }
+    )
+
+    assert subscription.cursor == rows[2].pk
+    assert session.transport.events == []
+    assert session.transport.resyncs[0].as_dict() == {
+        "type": "resync_required",
+        "subscription_id": "sub_1",
+        "cursor": rows[2].pk,
+        "reason": "cursor_pruned",
+    }

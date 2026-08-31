@@ -10,7 +10,7 @@ from object_streams.events import SourceRef
 from object_streams.events import StreamEvent
 
 
-__all__ = ("ObjectStreamEvent",)
+__all__ = ("ObjectStreamEvent", "ObjectStreamOutboxState")
 
 
 def _content_type_model_label(content_type: ContentType) -> str:
@@ -90,3 +90,18 @@ class ObjectStreamEvent(models.Model):
             after=self.after,
             metadata=self.metadata or {},
         )
+
+
+class ObjectStreamOutboxState(models.Model):
+    """Singleton row recording how far the outbox has been pruned.
+
+    Replay needs to tell a range that was pruned from a range that never
+    existed, because primary key sequences skip ids for rolled back
+    transactions. The watermark makes that exact instead of inferred.
+    """
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    pruned_through = models.BigIntegerField(default=0)
+
+    def __str__(self):
+        return f"pruned through {self.pruned_through}"

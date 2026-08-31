@@ -22,6 +22,7 @@ from object_streams.exceptions import NotRegistered
 from object_streams.models import ObjectStreamEvent
 from object_streams.outbox import latest_outbox_cursor
 from object_streams.outbox import outbox_events_after
+from object_streams.outbox import replay_is_complete
 from object_streams.registry import ObjectStreamRegistration
 from object_streams.registry import ObjectStreamRegistry
 from object_streams.registry import registry as default_registry
@@ -129,6 +130,9 @@ class _BaseSubscriptionSession:
                 return ListAction.DELETED
             return ListAction.REMOVED
         return None
+
+    def _replay_is_complete(self, requested_cursor: int) -> bool:
+        return replay_is_complete(requested_cursor)
 
     def _has_collection_replay_events(
         self,
@@ -294,6 +298,15 @@ class SubscriptionSession(_BaseSubscriptionSession):
         through_cursor: int,
     ) -> None:
         if requested_cursor is None or requested_cursor == through_cursor:
+            return
+        if not self._replay_is_complete(requested_cursor):
+            self._send_resync(
+                ResyncRequired(
+                    subscription_id=active.subscription_id,
+                    cursor=through_cursor,
+                    reason="cursor_pruned",
+                )
+            )
             return
         if active.request.kind == SubscriptionKind.OBJECT:
             self._replay_object_subscription(active, requested_cursor, through_cursor=through_cursor)
@@ -468,6 +481,15 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
         through_cursor: int,
     ) -> None:
         if requested_cursor is None or requested_cursor == through_cursor:
+            return
+        if not await database_sync_to_async(self._replay_is_complete)(requested_cursor):
+            await self.transport.send_resync(
+                ResyncRequired(
+                    subscription_id=active.subscription_id,
+                    cursor=through_cursor,
+                    reason="cursor_pruned",
+                )
+            )
             return
         if active.request.kind == SubscriptionKind.OBJECT:
             await self._replay_object_subscription(active, requested_cursor, through_cursor=through_cursor)

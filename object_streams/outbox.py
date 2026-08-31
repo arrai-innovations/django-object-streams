@@ -11,6 +11,7 @@ from object_streams.events import ObjectRef
 from object_streams.events import SourceRef
 from object_streams.events import StreamEvent
 from object_streams.models import ObjectStreamEvent
+from object_streams.models import ObjectStreamOutboxState
 from object_streams.postgres import notify_outbox_event
 
 
@@ -19,6 +20,9 @@ __all__ = (
     "enqueue_outbox_event",
     "latest_outbox_cursor",
     "outbox_events_after",
+    "pruned_through_cursor",
+    "record_pruned_through",
+    "replay_is_complete",
 )
 
 
@@ -98,6 +102,33 @@ def latest_outbox_cursor() -> int:
     """Return the latest global outbox cursor, or 0 when the outbox is empty."""
 
     return ObjectStreamEvent.objects.order_by("-id").values_list("id", flat=True).first() or 0
+
+
+def pruned_through_cursor(*, using: str | None = None) -> int:
+    """Return the highest outbox cursor removed by retention pruning."""
+
+    manager = ObjectStreamOutboxState.objects
+    if using is not None:
+        manager = manager.db_manager(using)
+    return manager.values_list("pruned_through", flat=True).first() or 0
+
+
+def record_pruned_through(cursor: int, *, using: str | None = None) -> None:
+    """Raise the pruning watermark to a cursor that has been deleted."""
+
+    manager = ObjectStreamOutboxState.objects
+    if using is not None:
+        manager = manager.db_manager(using)
+    state, created = manager.get_or_create(pk=1, defaults={"pruned_through": cursor})
+    if not created and cursor > state.pruned_through:
+        state.pruned_through = cursor
+        state.save(update_fields=["pruned_through"])
+
+
+def replay_is_complete(cursor: int) -> bool:
+    """Return whether every outbox row after a cursor is still retained."""
+
+    return cursor >= pruned_through_cursor()
 
 
 def outbox_events_after(

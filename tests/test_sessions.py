@@ -9,6 +9,7 @@ from object_streams.events import ObjectRef
 from object_streams.events import StreamEvent
 from object_streams.outbox import create_outbox_event
 from object_streams.registry import ObjectStreamRegistry
+from object_streams.retention import prune_outbox
 from object_streams.sessions import SubscriptionSession
 from tests.testapp.models import Note
 
@@ -425,3 +426,100 @@ def test_object_replay_sends_subject_events_after_cursor():
             "fetch": True,
         }
     ]
+
+
+@pytest.mark.django_db
+def test_object_replay_resyncs_when_the_cursor_was_pruned():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    note = Note.objects.create(title="Open")
+    rows = [
+        create_outbox_event(
+            StreamEvent(subject=ObjectRef.from_instance(note), op=EventOperation.UPDATED),
+            notify=False,
+        )
+        for _ in range(3)
+    ]
+    prune_outbox(max_rows=1)
+    session = make_session(registry)
+
+    subscription = session.subscribe(
+        {
+            "op": "subscribe",
+            "kind": "object",
+            "model": "testapp.Note",
+            "pk": note.pk,
+            "cursor": rows[0].pk,
+        }
+    )
+
+    assert subscription.cursor == rows[2].pk
+    assert session.transport.events == []
+    assert session.transport.resyncs[0].as_dict() == {
+        "type": "resync_required",
+        "subscription_id": "sub_1",
+        "cursor": rows[2].pk,
+        "reason": "cursor_pruned",
+    }
+
+
+@pytest.mark.django_db
+def test_object_replay_still_replays_a_retained_cursor_after_pruning():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    note = Note.objects.create(title="Open")
+    rows = [
+        create_outbox_event(
+            StreamEvent(
+                subject=ObjectRef.from_instance(note),
+                op=EventOperation.UPDATED,
+                changed_fields=("title",),
+            ),
+            notify=False,
+        )
+        for _ in range(3)
+    ]
+    prune_outbox(max_rows=2)
+    session = make_session(registry)
+
+    subscription = session.subscribe(
+        {
+            "op": "subscribe",
+            "kind": "object",
+            "model": "testapp.Note",
+            "pk": note.pk,
+            "cursor": rows[1].pk,
+        }
+    )
+
+    assert subscription.cursor == rows[2].pk
+    assert session.transport.resyncs == []
+    assert [event.cursor for event in session.transport.events] == [rows[2].pk]
+
+
+@pytest.mark.django_db
+def test_filter_replay_resyncs_when_the_cursor_was_pruned():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    note = Note.objects.create(title="Open")
+    rows = [
+        create_outbox_event(
+            StreamEvent(subject=ObjectRef.from_instance(note), op=EventOperation.UPDATED),
+            notify=False,
+        )
+        for _ in range(3)
+    ]
+    prune_outbox(max_rows=1)
+    session = make_session(registry)
+
+    session.subscribe(
+        {
+            "op": "subscribe",
+            "kind": "filter",
+            "model": "testapp.Note",
+            "filter": {"title": "Open"},
+            "cursor": rows[0].pk,
+        }
+    )
+
+    assert session.transport.resyncs[0].reason == "cursor_pruned"
