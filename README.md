@@ -6,7 +6,10 @@ It is designed to tell clients what changed and whether they should refetch thro
 
 ## Status
 
-Pre-alpha scaffold. The current package establishes the core API shape and test harness. Transport delivery, producer adapters, and history integrations are intentionally thin extension points.
+Pre-alpha. The current package includes the core registration API, a replayable
+outbox table, generic source-to-event producer helpers, and a connection-local
+subscription session runtime. A concrete Channels consumer, PostgreSQL
+`LISTEN/NOTIFY` wakeups, and history integrations are not implemented yet.
 
 ## Database Support
 
@@ -54,6 +57,8 @@ python manage.py migrate object_streams
 
 ## Usage Sketch
 
+Register models that can be subscribed to:
+
 ```python
 import django_filters
 
@@ -78,7 +83,52 @@ register(
 )
 ```
 
-Client subscription messages are expected to look like:
+Produce outbox events after application writes:
+
+```python
+from object_streams.events import EventOperation
+from object_streams.producers import enqueue_source_events
+
+
+order.status = "open"
+order.save(update_fields=["status"])
+enqueue_source_events(
+    order,
+    op=EventOperation.UPDATED,
+    changed_fields=["status"],
+)
+```
+
+For scripts, tests, or jobs that need the outbox row immediately, use
+`create_source_events(...)` instead.
+
+Handle connection-local subscriptions with a transport object:
+
+```python
+from object_streams.sessions import SubscriptionSession
+
+
+session = SubscriptionSession(
+    user=request.user,
+    request=request,
+    transport=transport,
+)
+
+session.handle_message(
+    {
+        "op": "subscribe",
+        "kind": "filter",
+        "model": "store.CustomerOrder",
+        "filter": {"status": "open"},
+        "cursor": 120000,
+    }
+)
+```
+
+`SubscriptionSession` is intentionally imported from `object_streams.sessions`.
+It is not exported from the package root because it imports Django models.
+
+Client subscription messages look like:
 
 ```json
 {"op": "subscribe", "kind": "filter", "model": "store.CustomerOrder", "filter": {"status": "open"}, "cursor": 120000}
@@ -97,6 +147,18 @@ Subscription-relative event messages look like:
   "list_action": "changed",
   "changed_fields": ["workflow_state"],
   "fetch": true
+}
+```
+
+When the session cannot safely replay collection changes after a cursor, it
+sends a subscription-level resync message instead of a subject-bearing event:
+
+```json
+{
+  "type": "resync_required",
+  "subscription_id": "sub_7",
+  "cursor": 120044,
+  "reason": "cursor_replay_unavailable"
 }
 ```
 
@@ -121,4 +183,5 @@ just check
 just test
 ```
 
-Package code follows standard uv, setuptools, ruff, pytest-django, and Justfile conventions for a focused Django library.
+Package code follows standard uv, setuptools, ruff, pytest-django, and Justfile
+conventions for a focused Django library.
