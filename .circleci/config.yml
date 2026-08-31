@@ -1,0 +1,526 @@
+version: 2.1
+
+orbs:
+    github: arrai/github@5.0.0
+    pypi: arrai/pypi@3.1.0
+    pysentry: arrai/pysentry@1.0.0
+    pytest: arrai/pytest@11.0.0
+    utils: arrai/utils@1.23.3
+
+executors:
+    base:
+        docker:
+            - image: cimg/base:current
+    python311-base:
+        docker:
+            - image: cimg/python:3.11
+    python312-base:
+        docker:
+            - image: cimg/python:3.12
+    python313-base:
+        docker:
+            - image: cimg/python:3.13
+    python314-base:
+        docker:
+            - image: cimg/python:3.14
+    python311-pg:
+        environment:
+            DATABASE_HOST: 127.0.0.1
+            DATABASE_NAME: django_object_streams
+            DATABASE_USER: postgres
+        docker:
+            - image: cimg/python:3.11
+            - image: cimg/postgres:15.12
+              environment:
+                  POSTGRES_DB: django_object_streams
+                  POSTGRES_HOST_AUTH_METHOD: trust
+                  POSTGRES_USER: postgres
+    python312-pg:
+        environment:
+            DATABASE_HOST: 127.0.0.1
+            DATABASE_NAME: django_object_streams
+            DATABASE_USER: postgres
+        docker:
+            - image: cimg/python:3.12
+            - image: cimg/postgres:15.12
+              environment:
+                  POSTGRES_DB: django_object_streams
+                  POSTGRES_HOST_AUTH_METHOD: trust
+                  POSTGRES_USER: postgres
+    python313-pg:
+        environment:
+            DATABASE_HOST: 127.0.0.1
+            DATABASE_NAME: django_object_streams
+            DATABASE_USER: postgres
+        docker:
+            - image: cimg/python:3.13
+            - image: cimg/postgres:15.12
+              environment:
+                  POSTGRES_DB: django_object_streams
+                  POSTGRES_HOST_AUTH_METHOD: trust
+                  POSTGRES_USER: postgres
+    python314-pg:
+        environment:
+            DATABASE_HOST: 127.0.0.1
+            DATABASE_NAME: django_object_streams
+            DATABASE_USER: postgres
+        docker:
+            - image: cimg/python:3.14
+            - image: cimg/postgres:15.12
+              environment:
+                  POSTGRES_DB: django_object_streams
+                  POSTGRES_HOST_AUTH_METHOD: trust
+                  POSTGRES_USER: postgres
+    python314-pg-redis:
+        environment:
+            DATABASE_HOST: 127.0.0.1
+            DATABASE_NAME: django_object_streams
+            DATABASE_USER: postgres
+            OBJECT_STREAMS_TEST_REDIS_URL: redis://localhost:6379/15
+        docker:
+            - image: cimg/python:3.14
+            - image: cimg/postgres:15.12
+              environment:
+                  POSTGRES_DB: django_object_streams
+                  POSTGRES_HOST_AUTH_METHOD: trust
+                  POSTGRES_USER: postgres
+            - image: cimg/redis:6.2
+
+commands:
+    run-checks:
+        steps:
+            - run:
+                  name: Install development dependencies
+                  command: uv sync --dev --frozen
+            - run:
+                  name: Run Ruff checks
+                  command: uv run --group dev --no-sync ruff check .
+            - run:
+                  name: Check Ruff formatting
+                  command: uv run --group dev --no-sync ruff format --check .
+                  when: always
+
+jobs:
+    build:
+        executor: python311-base
+        resource_class: small
+        steps:
+            - checkout
+            - when:
+                  condition: <<pipeline.git.tag>>
+                  steps:
+                      - run:
+                            name: Verify Git tag matches Python version
+                            command: |
+                                uv sync --frozen --no-default-groups
+                                PYTHON_VERSION=$(uv run --no-sync python -c "import object_streams; print(object_streams.__version__)")
+                                if [ "$CIRCLE_TAG" != "$PYTHON_VERSION" ]; then
+                                  echo "Git tag ($CIRCLE_TAG) does not match the Python version ($PYTHON_VERSION)."
+                                  exit 1
+                                fi
+                                echo "Git tag matches the Python version: $CIRCLE_TAG"
+            - run:
+                  name: Build package
+                  command: uv build --clear --out-dir dist
+            - save_cache:
+                  paths:
+                      - ~/project/dist
+                  key: build-{{ .Environment.CIRCLE_WORKFLOW_ID }}
+
+    install:
+        parameters:
+            executor:
+                description: Python environment for the wheel installation test.
+                type: executor
+                default: python311-base
+        executor: <<parameters.executor>>
+        resource_class: small
+        steps:
+            - restore_cache:
+                  keys:
+                      - build-{{ .Environment.CIRCLE_WORKFLOW_ID }}
+            - run:
+                  name: Install wheel
+                  command: pip install ~/project/dist/*.whl
+            - run:
+                  name: Import library
+                  command: python -c "import object_streams; print(object_streams.__version__)"
+
+    check:
+        executor: python311-base
+        resource_class: small
+        steps:
+            - checkout
+            - run-checks
+
+    check-fixed-ip:
+        executor: python311-base
+        resource_class: small
+        circleci_ip_ranges: true
+        steps:
+            - checkout
+            - utils/add_ssh_config
+            - utils/make_status_shield:
+                  status: running
+                  color: lightblue
+                  label: ruff
+            - utils/rsync_file:
+                  file: ~/status.svg
+                  remote_file: ${CIRCLE_BRANCH}/ruff.svg
+                  host: docs
+            - run-checks
+            - utils/make_status_shield:
+                  when: on_success
+                  status: passed
+                  color: brightgreen
+                  label: ruff
+                  file: ~/status.svg
+            - utils/make_status_shield:
+                  when: on_fail
+                  status: failed
+                  color: red
+                  label: ruff
+                  file: ~/status.svg
+            - utils/rsync_file:
+                  when: always
+                  file: ~/status.svg
+                  remote_file: ${CIRCLE_BRANCH}/ruff.svg
+                  host: docs
+
+    pytest-status:
+        parameters:
+            status:
+                description: Status text to put on the shield.
+                type: enum
+                enum: [passed, failed]
+            color:
+                description: Color to use for the shield.
+                type: enum
+                enum: [brightgreen, red]
+        executor: base
+        resource_class: small
+        circleci_ip_ranges: true
+        steps:
+            - utils/add_ssh_config
+            - utils/make_status_shield:
+                  status: <<parameters.status>>
+                  color: <<parameters.color>>
+                  label: pytest
+                  file: ~/status.svg
+            - utils/rsync_file:
+                  file: ~/status.svg
+                  remote_file: ${CIRCLE_BRANCH}/pytest.svg
+                  host: docs
+
+workflows:
+    test:
+        jobs:
+            - pytest/pytest:
+                  name: pytest-django52-py311
+                  executor: python311-pg
+                  context: arrai-global
+                  pytest_args: ""
+                  create_status_badge: false
+                  create_coverage_badge: false
+                  build_coverage: false
+                  setup: &wait-for-postgres
+                      - utils/install_dockerize
+                      - run:
+                            name: Wait for PostgreSQL
+                            command: dockerize -wait tcp://localhost:5432 -timeout 1m
+                  filters:
+                      branches:
+                          only: /.*/
+                      tags:
+                          only: &release-tags /^[0-9]+\.[0-9]+\.[0-9]+.*$/
+            - pytest/pytest:
+                  name: pytest-django60-py312
+                  executor: python312-pg
+                  context: arrai-global
+                  pytest_args: ""
+                  create_status_badge: false
+                  create_coverage_badge: false
+                  build_coverage: false
+                  setup: *wait-for-postgres
+                  config: &pin-django60
+                      - run:
+                            name: Pin Django 6.0
+                            command: uv pip install "django>=6.0,<6.1"
+                  filters:
+                      branches:
+                          only: /.*/
+                      tags:
+                          only: *release-tags
+            - pytest/pytest:
+                  name: pytest-django60-py313
+                  executor: python313-pg
+                  context: arrai-global
+                  pytest_args: ""
+                  create_status_badge: false
+                  create_coverage_badge: false
+                  build_coverage: false
+                  setup: *wait-for-postgres
+                  config: *pin-django60
+                  filters:
+                      branches:
+                          only: /.*/
+                      tags:
+                          only: *release-tags
+            - pytest/pytest:
+                  name: pytest-django60-py314
+                  executor: python314-pg
+                  context: arrai-global
+                  pytest_args: ""
+                  create_status_badge: false
+                  create_coverage_badge: false
+                  build_coverage: false
+                  setup: *wait-for-postgres
+                  config: *pin-django60
+                  filters:
+                      branches:
+                          only: /.*/
+                      tags:
+                          only: *release-tags
+            - pytest/pytest:
+                  name: pytest-django61-py312
+                  executor: python312-pg
+                  context: arrai-global
+                  pytest_args: ""
+                  create_status_badge: false
+                  create_coverage_badge: false
+                  build_coverage: false
+                  setup: *wait-for-postgres
+                  config: &pin-django61
+                      - run:
+                            name: Pin Django 6.1
+                            command: uv pip install "django>=6.1,<6.2"
+                  filters:
+                      branches:
+                          only: /.*/
+                      tags:
+                          only: *release-tags
+            - pytest/pytest:
+                  name: pytest-django61-py313
+                  executor: python313-pg
+                  context: arrai-global
+                  pytest_args: ""
+                  create_status_badge: false
+                  create_coverage_badge: false
+                  build_coverage: false
+                  setup: *wait-for-postgres
+                  config: *pin-django61
+                  filters:
+                      branches:
+                          only: /.*/
+                      tags:
+                          only: *release-tags
+            - pytest/pytest_fixed_ip:
+                  name: pytest-django61-py314
+                  executor: python314-pg-redis
+                  context: arrai-global
+                  pytest_args: --cov
+                  create_status_badge: false
+                  coverage_artifacts_directory: pytest
+                  coverage_badge_label: coverage
+                  coverage_badge_file: coverage.svg
+                  setup: &wait-for-postgres-and-redis
+                      - utils/install_dockerize
+                      - run:
+                            name: Wait for PostgreSQL and Redis
+                            command: dockerize -wait tcp://localhost:5432 -wait tcp://localhost:6379 -timeout 1m
+                  config: *pin-django61
+                  filters:
+                      branches:
+                          only: main
+                      tags:
+                          only: *release-tags
+            - pytest/pytest:
+                  name: pytest-django61-py314-no-badge
+                  executor: python314-pg-redis
+                  context: arrai-global
+                  pytest_args: --cov --cov-report=term-missing
+                  create_status_badge: false
+                  create_coverage_badge: false
+                  build_coverage: false
+                  setup: *wait-for-postgres-and-redis
+                  config: *pin-django61
+                  filters:
+                      branches:
+                          ignore: main
+                      tags:
+                          ignore: /.*/
+            - pytest-status:
+                  name: pytest-status-pending
+                  status: failed
+                  color: red
+                  context: arrai-global
+                  filters:
+                      branches:
+                          only: main
+            - pytest-status:
+                  name: pytest-status-passed
+                  status: passed
+                  color: brightgreen
+                  context: arrai-global
+                  requires:
+                      - pytest-status-pending
+                      - pytest-django52-py311
+                      - pytest-django60-py312
+                      - pytest-django60-py313
+                      - pytest-django60-py314
+                      - pytest-django61-py312
+                      - pytest-django61-py313
+                      - pytest-django61-py314
+                  filters:
+                      branches:
+                          only: main
+            - build:
+                  name: build
+                  requires:
+                      - pytest-django52-py311
+                      - pytest-django60-py312
+                      - pytest-django60-py313
+                      - pytest-django60-py314
+                      - pytest-django61-py312
+                      - pytest-django61-py313
+                      - pytest-django61-py314
+                  filters:
+                      tags:
+                          only: *release-tags
+                      branches:
+                          ignore: /.*/
+            - install:
+                  name: release-install-py311
+                  executor: python311-base
+                  requires:
+                      - build
+                  filters:
+                      tags:
+                          only: *release-tags
+                      branches:
+                          ignore: /.*/
+            - install:
+                  name: release-install-py312
+                  executor: python312-base
+                  requires:
+                      - build
+                  filters:
+                      tags:
+                          only: *release-tags
+                      branches:
+                          ignore: /.*/
+            - install:
+                  name: release-install-py313
+                  executor: python313-base
+                  requires:
+                      - build
+                  filters:
+                      tags:
+                          only: *release-tags
+                      branches:
+                          ignore: /.*/
+            - install:
+                  name: release-install-py314
+                  executor: python314-base
+                  requires:
+                      - build
+                  filters:
+                      tags:
+                          only: *release-tags
+                      branches:
+                          ignore: /.*/
+            - pypi/upload_release:
+                  name: publish
+                  context: arrai-public-package-publishing
+                  cache_key: build-{{ .Environment.CIRCLE_WORKFLOW_ID }}
+                  requires:
+                      - release-install-py311
+                      - release-install-py312
+                      - release-install-py313
+                      - release-install-py314
+                  filters:
+                      tags:
+                          only: *release-tags
+                      branches:
+                          ignore: /.*/
+            - github/create_release:
+                  name: release-on-github
+                  context: arrai-global
+                  requires:
+                      - publish
+                  filters:
+                      tags:
+                          only: *release-tags
+                      branches:
+                          ignore: /.*/
+
+    package:
+        jobs:
+            - build:
+                  name: package-build
+                  filters:
+                      branches:
+                          only: /.*/
+                      tags:
+                          ignore: /.*/
+            - install:
+                  name: package-install-py311
+                  executor: python311-base
+                  requires:
+                      - package-build
+                  filters: &package-filters
+                      branches:
+                          only: /.*/
+                      tags:
+                          ignore: /.*/
+            - install:
+                  name: package-install-py312
+                  executor: python312-base
+                  requires:
+                      - package-build
+                  filters: *package-filters
+            - install:
+                  name: package-install-py313
+                  executor: python313-base
+                  requires:
+                      - package-build
+                  filters: *package-filters
+            - install:
+                  name: package-install-py314
+                  executor: python314-base
+                  requires:
+                      - package-build
+                  filters: *package-filters
+
+    lint:
+        jobs:
+            - check-fixed-ip:
+                  name: ruff
+                  context: arrai-global
+                  filters:
+                      branches:
+                          only: main
+            - check:
+                  name: ruff-no-badge
+                  filters:
+                      branches:
+                          ignore: main
+
+    audit:
+        jobs:
+            - pysentry/pysentry_ip:
+                  name: pysentry
+                  context: arrai-global
+                  executor: python311-base
+                  version: 0.4.9
+                  filters:
+                      branches:
+                          only: main
+            - pysentry/pysentry:
+                  name: pysentry-no-badge
+                  executor: python311-base
+                  version: 0.4.9
+                  create_badges: false
+                  filters:
+                      branches:
+                          ignore: main
