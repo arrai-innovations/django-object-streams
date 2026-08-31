@@ -20,6 +20,15 @@ adapters are expected to use PostgreSQL behavior directly.
 
 ## Install
 
+This pre-alpha package is not published to PyPI yet. Install from GitHub while
+the API is still settling:
+
+```console
+uv add git+https://github.com/arrai-innovations/django-object-streams.git
+```
+
+After the package is published:
+
 ```console
 uv add django-object-streams
 ```
