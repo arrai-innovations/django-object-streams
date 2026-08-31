@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import django_filters
 import pytest
 
@@ -47,14 +49,36 @@ class NoteFilter(django_filters.FilterSet):
         fields = ["title"]
 
 
+class RequestAwareNoteFilter(django_filters.FilterSet):
+    title = django_filters.CharFilter(method="filter_title")
+
+    class Meta:
+        model = Note
+        fields = ["title"]
+
+    def filter_title(self, queryset, name, value):
+        return queryset.filter(title=f"{self.request.title_prefix}:{value}")
+
+
+class RejectingNoteFilter(django_filters.FilterSet):
+    class Meta:
+        model = Note
+        fields = ["title"]
+
+    def is_valid(self):
+        msg = "FilterSets should not validate non-filter subscriptions."
+        raise AssertionError(msg)
+
+
 class PrefixVisibilityPolicy:
     def get_queryset(self, user, model, action="read"):
         return model._default_manager.filter(title__startswith=user)
 
 
-def make_session(registry):
+def make_session(registry, *, request=None):
     return SubscriptionSession(
         user=None,
+        request=request,
         transport=RecordingTransport(),
         registry=registry,
     )
@@ -82,6 +106,99 @@ def test_session_subscribes_and_unsubscribes_filter():
     assert session.handle_message({"op": "unsubscribe", "subscription_id": "sub_1"}) is True
     assert session.transport.unsubscribed == ["sub_1"]
     assert session.subscriptions == ()
+
+
+@pytest.mark.django_db
+def test_empty_filter_subscription_matches_visible_queryset():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    open_note = Note.objects.create(title="Open")
+    closed_note = Note.objects.create(title="Closed")
+    session = make_session(registry)
+
+    subscription = session.subscribe(
+        {
+            "op": "subscribe",
+            "kind": "filter",
+            "model": "testapp.Note",
+            "filter": {},
+        }
+    )
+
+    assert subscription is not None
+    assert session.transport.errors == []
+    assert session.subscriptions[0].member_pks == {str(open_note.pk), str(closed_note.pk)}
+
+
+@pytest.mark.django_db
+def test_session_accepts_filters_alias():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    open_note = Note.objects.create(title="Open")
+    Note.objects.create(title="Closed")
+    session = make_session(registry)
+
+    subscription = session.subscribe(
+        {
+            "op": "subscribe",
+            "kind": "filter",
+            "model": "testapp.Note",
+            "filters": {"title": "Open"},
+        }
+    )
+
+    assert subscription is not None
+    assert subscription.filters == {"title": "Open"}
+    assert session.subscriptions[0].member_pks == {str(open_note.pk)}
+
+
+@pytest.mark.django_db
+def test_filterset_receives_session_request():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=RequestAwareNoteFilter)
+    visible = Note.objects.create(title="alice:Open")
+    Note.objects.create(title="bob:Open")
+    session = make_session(registry, request=SimpleNamespace(title_prefix="alice"))
+
+    subscription = session.subscribe(
+        {
+            "op": "subscribe",
+            "kind": "filter",
+            "model": "testapp.Note",
+            "filter": {"title": "Open"},
+        }
+    )
+
+    assert subscription is not None
+    assert session.subscriptions[0].member_pks == {str(visible.pk)}
+
+
+@pytest.mark.django_db
+def test_model_and_object_subscriptions_do_not_apply_filterset():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=RejectingNoteFilter)
+    note = Note.objects.create(title="Open")
+    session = make_session(registry)
+
+    model_subscription = session.subscribe(
+        {
+            "op": "subscribe",
+            "kind": "model",
+            "model": "testapp.Note",
+        }
+    )
+    object_subscription = session.subscribe(
+        {
+            "op": "subscribe",
+            "kind": "object",
+            "model": "testapp.Note",
+            "pk": note.pk,
+        }
+    )
+
+    assert model_subscription is not None
+    assert object_subscription is not None
+    assert session.transport.errors == []
 
 
 @pytest.mark.django_db

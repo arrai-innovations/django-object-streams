@@ -36,7 +36,7 @@ def apply_filterset(
             raise FilterValidationError({"filter": "Filters are not supported for this model."})
         return queryset
 
-    filterset = filterset_class(data=dict(data or {}) or None, queryset=queryset, request=request)
+    filterset = filterset_class(data=dict(data or {}), queryset=queryset, request=request)
     if not filterset.is_valid():
         raise FilterValidationError(filterset.errors)
     return filterset.qs

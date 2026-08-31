@@ -27,6 +27,20 @@ def test_subscription_request_from_filter_message():
     assert request.as_dict()["filter"] == {"status": "open"}
 
 
+def test_subscription_request_accepts_filters_alias():
+    request = SubscriptionRequest.from_message(
+        {
+            "op": "subscribe",
+            "kind": "filter",
+            "model": "store.CustomerOrder",
+            "filters": {"status": "open"},
+        }
+    )
+
+    assert request.filters == {"status": "open"}
+    assert request.as_dict()["filter"] == {"status": "open"}
+
+
 def test_object_subscription_requires_pk():
     with pytest.raises(ValueError, match="primary key"):
         SubscriptionRequest(kind="object", model="store.CustomerOrder")

@@ -132,6 +132,13 @@ session.handle_message(
 )
 ```
 
+Filter subscriptions use the registered `django-filter` compatible FilterSet.
+The FilterSet receives the visibility-scoped queryset and the `request` passed
+to `SubscriptionSession`, so request-aware method filters can use the same
+context as normal Django view filters. Clients may send either `filter` or
+`filters`. An empty filter object is valid and means no FilterSet constraints
+beyond visibility. Object and model subscriptions use visibility only.
+
 `SubscriptionSession` is intentionally imported from `object_streams.sessions`.
 It is not exported from the package root because it imports Django models.
 
