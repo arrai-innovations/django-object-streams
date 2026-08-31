@@ -8,8 +8,9 @@ It is designed to tell clients what changed and whether they should refetch thro
 
 Pre-alpha. The current package includes the core registration API, a replayable
 outbox table, generic source-to-event producer helpers, and a connection-local
-subscription session runtime. A concrete Channels consumer, PostgreSQL
-`LISTEN/NOTIFY` wakeups, and history integrations are not implemented yet.
+subscription session runtime. A minimal Channels JSON websocket consumer is
+available. Automatic channel group fanout, PostgreSQL `LISTEN/NOTIFY` wakeups,
+and history integrations are not implemented yet.
 
 ## Database Support
 
@@ -128,10 +129,58 @@ session.handle_message(
 `SubscriptionSession` is intentionally imported from `object_streams.sessions`.
 It is not exported from the package root because it imports Django models.
 
+Route the minimal Channels consumer from your ASGI application:
+
+```python
+from channels.routing import ProtocolTypeRouter
+from channels.routing import URLRouter
+from django.urls import path
+
+from object_streams.transports.channels import ObjectStreamConsumer
+
+
+application = ProtocolTypeRouter(
+    {
+        "websocket": URLRouter(
+            [
+                path("ws/object-streams/", ObjectStreamConsumer.as_asgi()),
+            ]
+        ),
+    }
+)
+```
+
+The initial consumer accepts websocket subscription messages and can publish
+outbox rows when it receives an `object.stream.event` ASGI message containing
+`id` or `outbox_id`. Automatic group membership and database wakeups are future
+transport work.
+
 Client subscription messages look like:
 
 ```json
 {"op": "subscribe", "kind": "filter", "model": "store.CustomerOrder", "filter": {"status": "open"}, "cursor": 120000}
+```
+
+Subscribed acknowledgements look like:
+
+```json
+{
+  "type": "subscribed",
+  "subscription_id": "sub_7",
+  "kind": "filter",
+  "model": "store.CustomerOrder",
+  "filter": {"status": "open"},
+  "cursor": 120044
+}
+```
+
+Unsubscribe acknowledgements look like:
+
+```json
+{
+  "type": "unsubscribed",
+  "subscription_id": "sub_7"
+}
 ```
 
 Subscription-relative event messages look like:
