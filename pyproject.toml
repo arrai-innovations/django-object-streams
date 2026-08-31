@@ -33,6 +33,13 @@ dependencies = [
     "django-filter>=23.5",
 ]
 
+[project.optional-dependencies]
+# Trigger-based capture. The library works without it; producers are then called
+# from application code instead.
+triggers = [
+    "django-pgtrigger>=4.11",
+]
+
 [project.urls]
 repository = "https://github.com/arrai-innovations/django-object-streams/"
 
@@ -46,6 +53,7 @@ dev = [
     "pytest-cov>=5.0.0",
     "pytest-django>=4.8.0",
     "pytest-sugar>=1.0.0",
+    "django-pgtrigger>=4.11",
     "ruff==0.15.20",
 ]
 docs = [

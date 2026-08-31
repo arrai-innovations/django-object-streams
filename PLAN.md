@@ -32,6 +32,8 @@ remaining decisions have been implemented, rejected, or moved here.
 - [x] Done: Redis-backed live listener integration coverage.
 - [x] Done: outbox retention limits, pruning command, and a pruning watermark
   that turns a pruned cursor into `resync_required`.
+- [x] Done: trigger-based capture through `django-pgtrigger`, covering deletes and
+  bulk writes, computing changed columns, and stamping the Postgres transaction id.
 
 ## Release Cleanup
 
@@ -58,6 +60,8 @@ remaining decisions have been implemented, rejected, or moved here.
 - [ ] Later: define search subscription support beyond the current
   `unsupported_search` response.
 - [ ] Later: add ordering change hints for subscribed collections.
+- [ ] Next: surface the capture transaction id on `StreamEvent` and document how a
+  client coalesces the events of one transaction.
 - [ ] Later: decide whether shape parameters remain transport hints or become a
   payload adapter contract.
 - [ ] Later: document that exact live numbered pagination is not a core
@@ -85,6 +89,10 @@ remaining decisions have been implemented, rejected, or moved here.
   `OBJECT_STREAMS_RETENTION_DAYS`, and `OBJECT_STREAMS_RETENTION_MAX_ROWS`.
 - [ ] Later: report pruning progress and retention lag from the pruning
   command.
+- [ ] Next: system check that reports a declared capture trigger which was never
+  migrated, so capture cannot silently do nothing.
+- [ ] Later: express subject mapping in SQL so a source whose subject is another
+  object can be captured by trigger rather than by a Python producer.
 - [ ] Later: add structured logging around listener wakeups, fanout, and
   malformed notifications.
 - [ ] Later: add metrics hooks for outbox lag, fanout count, and active
@@ -100,6 +108,8 @@ remaining decisions have been implemented, rejected, or moved here.
   configuration.
 - [x] Done: retention, pruning, pruned-cursor replay, and public import surface
   coverage.
+- [x] Done: trigger capture coverage for inserts, updates, deletes, bulk writes,
+  rollback, notification, and transaction grouping.
 - [ ] Later: add compatibility tests for non-integer primary keys.
 
 ## External Boundaries

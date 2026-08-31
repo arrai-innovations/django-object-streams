@@ -20,8 +20,13 @@ DATABASES = {
 INSTALLED_APPS = [
     "django.contrib.auth",
     "django.contrib.contenttypes",
+    "pgtrigger",
     "object_streams",
     "tests.testapp",
 ]
+
+# tests.testapp has no migrations, so triggers declared in its model state are
+# installed after migrate rather than by a migration.
+PGTRIGGER_INSTALL_ON_MIGRATE = True
 
 MIDDLEWARE = []

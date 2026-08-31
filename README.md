@@ -121,6 +121,85 @@ default. Pass `notify=False` to `create_source_events(...)`,
 `enqueue_outbox_event(...)` when creating rows that should not wake connected
 consumers.
 
+## Trigger-Based Capture
+
+Calling the producers from application code works, but it depends on every write
+site remembering to do it. Postgres triggers do not:
+
+- The outbox row is written inside the same transaction as the write that caused
+  it, so nothing is lost between commit and a callback.
+- `DELETE` is captured. `post_save` cannot see deletes, and a `post_delete`
+  receiver is a second thing to remember.
+- Bulk writes are captured. `QuerySet.update()` and `bulk_create()` bypass
+  `save()` and signals entirely.
+- `changed_fields` is computed by comparing the old and new row, so it is
+  populated whether or not the write passed `update_fields`.
+
+Install the extra:
+
+```console
+uv add "django-object-streams[triggers]"
+```
+
+Add `pgtrigger` to `INSTALLED_APPS`, then declare capture in model state so
+migrations pick it up. On a model you own:
+
+```python
+from object_streams.triggers import ObjectStreamTrigger
+
+
+class Order(models.Model):
+    class Meta:
+        triggers = [ObjectStreamTrigger(name="order_stream")]
+```
+
+On a model you do not own, declare it on a proxy in your own app so the migration
+lands in your app rather than in the one that defines the model:
+
+```python
+class OrderStream(ThirdPartyOrder):
+    class Meta:
+        proxy = True
+        triggers = [ObjectStreamTrigger(name="order_stream")]
+```
+
+Run `makemigrations` and `migrate` afterwards. A declared trigger that was never
+migrated is not installed, and capture silently does nothing.
+
+Every captured row records the Postgres transaction id in `metadata`:
+
+```json
+{"transaction_id": "3208276"}
+```
+
+Events written by one transaction share it, so a client that receives several
+events from one logical change can coalesce them into a single refetch instead of
+one per row.
+
+The trigger sends its own `pg_notify`, which is transactional: the notification
+arrives when the transaction commits and is discarded when it rolls back. It
+reads the channel from a database setting so that changing it needs no migration:
+
+```sql
+ALTER DATABASE mydb SET object_streams.notify_channel = 'my_channel';
+```
+
+Without that setting the trigger uses `object_streams_events`, the same default
+as `OBJECT_STREAMS_NOTIFY_CHANNEL`. Set both when you override either.
+
+Two limits are worth knowing:
+
+- The captured row is its own subject, which suits models whose own writes are
+  what subscribers care about. A source whose subject is a different object, such
+  as a workflow state row pointing at the object it governs, needs its subject
+  mapping written as SQL or left to a Python producer.
+- `changed_fields` reports database column names, so a foreign key appears as
+  `supplier_id` rather than `supplier`.
+
+Producers and triggers can coexist, but not on the same table: a table with a
+capture trigger should not also have producers called against it, or each write
+lands in the outbox twice.
+
 Handle connection-local subscriptions with a transport object:
 
 ```python
