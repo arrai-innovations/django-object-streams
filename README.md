@@ -176,6 +176,10 @@ Use a process-shared channel layer, such as Redis, for production deployments.
 The default PostgreSQL notification channel is `object_streams_events`; set
 `OBJECT_STREAMS_NOTIFY_CHANNEL` to override it.
 
+Use `--once --timeout <seconds>` for smoke tests or supervisor health checks.
+The listener retries database errors by default. Set `--retry-delay <seconds>`
+and `--max-retries <count>` to control reconnect behavior.
+
 Client subscription messages look like:
 
 ```json
