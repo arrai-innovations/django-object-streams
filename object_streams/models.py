@@ -52,8 +52,11 @@ class ObjectStreamEvent(models.Model):
     class Meta:
         ordering = ["id"]
         indexes = [
-            models.Index(fields=["subject_content_type", "subject_object_id", "id"]),
-            models.Index(fields=["facet", "id"]),
+            models.Index(
+                fields=["subject_content_type", "subject_object_id", "id"],
+                name="object_stre_subject_4c6a07_idx",
+            ),
+            models.Index(fields=["facet", "id"], name="object_stre_facet_327c88_idx"),
         ]
 
     def __str__(self):
