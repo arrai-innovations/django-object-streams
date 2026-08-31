@@ -243,6 +243,10 @@ databases. By default, `tests.settings` connects through the local PostgreSQL
 socket as the `postgres` role and uses a database named
 `django_object_streams`.
 
+The Redis-backed live listener integration test runs when Redis is available.
+It uses `OBJECT_STREAMS_TEST_REDIS_URL`, defaulting to
+`redis://localhost:6379/15`, and skips when Redis is not reachable.
+
 Create the local database if needed:
 
 ```console

@@ -1,18 +1,26 @@
 import asyncio
 import json
+import os
+import queue
+import threading
+import uuid
+from io import StringIO
 
 import django_filters
 import pytest
 from asgiref.sync import async_to_sync
 from asgiref.testing import ApplicationCommunicator
 from channels.db import database_sync_to_async
+from django.core.management import call_command
 from django.test import override_settings
 
 from object_streams.events import EventOperation
 from object_streams.events import ObjectRef
 from object_streams.events import StreamEvent
 from object_streams.outbox import create_outbox_event
+from object_streams.producers import create_source_events
 from object_streams.registry import ObjectStreamRegistry
+from object_streams.sources import ModelSource
 from object_streams.transports.channels import ObjectStreamConsumer
 from object_streams.transports.channels import broadcast_outbox_event
 from tests.testapp.models import Note
@@ -29,6 +37,11 @@ CHANNEL_LAYERS = {
         "BACKEND": "channels.layers.InMemoryChannelLayer",
     },
 }
+REDIS_URL = os.environ.get("OBJECT_STREAMS_TEST_REDIS_URL", "redis://localhost:6379/15")
+REDIS_LISTENER_CHANNEL = "object_streams_redis_listener_test"
+REDIS_LISTENER_TIMEOUT = 3
+REDIS_LISTENER_ATTEMPTS = 20
+REDIS_POLL_TIMEOUT = 0.25
 
 
 def make_communicator(registry):
@@ -69,6 +82,55 @@ async def receive_json(communicator):
     response = await communicator.receive_output(timeout=1)
     assert response["type"] == "websocket.send"
     return json.loads(response["text"])
+
+
+async def maybe_receive_json(communicator, *, timeout):
+    if communicator.future.done():
+        communicator.future.result()
+    try:
+        response = await asyncio.wait_for(communicator.output_queue.get(), timeout=timeout)
+    except TimeoutError:
+        return None
+    assert response["type"] == "websocket.send"
+    return json.loads(response["text"])
+
+
+def redis_channel_layers():
+    pytest.importorskip("channels_redis")
+    redis = pytest.importorskip("redis")
+    client = None
+    try:
+        client = redis.Redis.from_url(REDIS_URL)
+        client.ping()
+    except redis.exceptions.RedisError as exc:
+        pytest.skip(f"Redis is not available at {REDIS_URL}: {exc}")
+    finally:
+        if client is not None:
+            client.close()
+
+    return {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [REDIS_URL],
+                "prefix": f"object-streams-test-{uuid.uuid4().hex}",
+                "expiry": 5,
+                "group_expiry": 5,
+            },
+        },
+    }
+
+
+def update_note_and_create_source_event(note_id, title, registry):
+    note = Note.objects.get(pk=note_id)
+    note.title = title
+    note.save(update_fields=["title"])
+    return create_source_events(
+        note,
+        op=EventOperation.UPDATED,
+        changed_fields=("title",),
+        registry=registry,
+    )
 
 
 @pytest.mark.django_db(transaction=True)
@@ -162,6 +224,87 @@ def test_object_stream_consumer_delivers_outbox_event_json():
         await disconnect(communicator)
 
     async_to_sync(run_test)()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_redis_listener_command_delivers_producer_event_to_websocket():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, sources=[ModelSource(Note)])
+    note = Note.objects.create(title="Open")
+    listener_result = queue.Queue()
+
+    def listen_once():
+        try:
+            call_command(
+                "object_streams_listen",
+                "--once",
+                "--timeout",
+                str(REDIS_LISTENER_TIMEOUT),
+                "--channel",
+                REDIS_LISTENER_CHANNEL,
+                verbosity=0,
+                stdout=StringIO(),
+                stderr=StringIO(),
+            )
+        except Exception as exc:
+            listener_result.put(exc)
+        else:
+            listener_result.put(None)
+
+    async def run_test():
+        communicator = make_communicator(registry)
+        listener_thread = threading.Thread(target=listen_once, daemon=True)
+        produced_cursors = set()
+        payload = None
+
+        await connect(communicator)
+        try:
+            await send_json(
+                communicator,
+                {
+                    "op": "subscribe",
+                    "kind": "model",
+                    "model": "testapp.Note",
+                },
+            )
+            subscribed = await receive_json(communicator)
+            listener_thread.start()
+
+            for attempt in range(REDIS_LISTENER_ATTEMPTS):
+                rows = await database_sync_to_async(update_note_and_create_source_event)(
+                    note.pk,
+                    f"Open {attempt}",
+                    registry,
+                )
+                produced_cursors.update(row.pk for row in rows)
+                payload = await maybe_receive_json(communicator, timeout=REDIS_POLL_TIMEOUT)
+                if payload is not None:
+                    break
+                if not listener_thread.is_alive() and not listener_result.empty():
+                    break
+
+            listener_thread.join(timeout=REDIS_LISTENER_TIMEOUT)
+            assert not listener_thread.is_alive()
+            result = listener_result.get_nowait()
+            if result is not None:
+                raise result
+        finally:
+            await disconnect(communicator)
+
+        assert payload is not None
+        assert payload["type"] == "event"
+        assert payload["subscription_id"] == subscribed["subscription_id"]
+        assert payload["cursor"] in produced_cursors
+        assert payload["subject"] == {"model": "testapp.Note", "pk": str(note.pk)}
+        assert payload["op"] == "updated"
+        assert payload["list_action"] == "changed"
+        assert payload["changed_fields"] == ["title"]
+
+    with override_settings(
+        CHANNEL_LAYERS=redis_channel_layers(),
+        OBJECT_STREAMS_NOTIFY_CHANNEL=REDIS_LISTENER_CHANNEL,
+    ):
+        async_to_sync(run_test)()
 
 
 @override_settings(CHANNEL_LAYERS=CHANNEL_LAYERS)
