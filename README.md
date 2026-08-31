@@ -9,8 +9,8 @@ It is designed to tell clients what changed and whether they should refetch thro
 Pre-alpha. The current package includes the core registration API, a replayable
 outbox table, generic source-to-event producer helpers, and a connection-local
 subscription session runtime. A minimal Channels JSON websocket consumer is
-available. Automatic channel group fanout, PostgreSQL `LISTEN/NOTIFY` wakeups,
-and history integrations are not implemented yet.
+available with channel-layer fanout and PostgreSQL `LISTEN/NOTIFY` wakeups.
+History integrations are not implemented yet.
 
 ## Database Support
 
@@ -103,6 +103,12 @@ enqueue_source_events(
 For scripts, tests, or jobs that need the outbox row immediately, use
 `create_source_events(...)` instead.
 
+Outbox writes send a PostgreSQL notification with the committed outbox id by
+default. Pass `notify=False` to `create_source_events(...)`,
+`enqueue_source_events(...)`, `create_outbox_event(...)`, or
+`enqueue_outbox_event(...)` when creating rows that should not wake connected
+consumers.
+
 Handle connection-local subscriptions with a transport object:
 
 ```python
@@ -150,10 +156,25 @@ application = ProtocolTypeRouter(
 )
 ```
 
-The initial consumer accepts websocket subscription messages and can publish
-outbox rows when it receives an `object.stream.event` ASGI message containing
-`id` or `outbox_id`. Automatic group membership and database wakeups are future
-transport work.
+The consumer accepts websocket subscription messages, joins deterministic
+Channels groups for active subscriptions, and publishes outbox rows when it
+receives an `object.stream.event` ASGI message containing `id` or `outbox_id`.
+Object subscriptions join object groups. Filter and model subscriptions join
+model groups, then each consumer evaluates the event against its own
+connection-local subscriptions and visibility policy.
+
+Run the PostgreSQL listener as a separate Django process:
+
+```console
+python manage.py object_streams_listen
+```
+
+That process listens for outbox notifications and fans each id out through the
+configured Channels layer. Your ASGI workers can run under Uvicorn, Daphne, or
+another ASGI server; the listener is separate from the WebSocket workers.
+Use a process-shared channel layer, such as Redis, for production deployments.
+The default PostgreSQL notification channel is `object_streams_events`; set
+`OBJECT_STREAMS_NOTIFY_CHANNEL` to override it.
 
 Client subscription messages look like:
 

@@ -11,6 +11,7 @@ from object_streams.events import ObjectRef
 from object_streams.events import SourceRef
 from object_streams.events import StreamEvent
 from object_streams.models import ObjectStreamEvent
+from object_streams.postgres import notify_outbox_event
 
 
 __all__ = (
@@ -27,22 +28,25 @@ def _model_label(model: type[models.Model] | str) -> str:
     return model._meta.label
 
 
-def _content_type_for_model_label(model_label: str) -> ContentType:
+def _content_type_for_model_label(model_label: str, *, using: str | None = None) -> ContentType:
     app_label, model_name = model_label.split(".", 1)
     model_class = apps.get_model(app_label, model_name)
     if model_class is None:
         msg = f"No installed model matches {model_label!r}."
         raise LookupError(msg)
-    return ContentType.objects.get_for_model(model_class)
+    manager = ContentType.objects
+    if using is not None:
+        manager = manager.db_manager(using)
+    return manager.get_for_model(model_class)
 
 
-def _source_content_type(source: ObjectRef | SourceRef | None) -> ContentType | None:
+def _source_content_type(source: ObjectRef | SourceRef | None, *, using: str | None = None) -> ContentType | None:
     if source is None:
         return None
     if isinstance(source, ObjectRef):
-        return _content_type_for_model_label(source.model)
+        return _content_type_for_model_label(source.model, using=using)
     if source.model:
-        return _content_type_for_model_label(source.model)
+        return _content_type_for_model_label(source.model, using=using)
     return None
 
 
@@ -52,19 +56,23 @@ def _source_object_id(source: ObjectRef | SourceRef | None) -> str:
     return source.pk or ""
 
 
-def create_outbox_event(event: StreamEvent) -> ObjectStreamEvent:
+def create_outbox_event(event: StreamEvent, *, notify: bool = True, using: str | None = None) -> ObjectStreamEvent:
     """Persist a stream event immediately and return the created outbox row."""
 
     source_history_content_type = None
     source_history_id = ""
     if isinstance(event.source, SourceRef) and event.source.history_model:
-        source_history_content_type = _content_type_for_model_label(event.source.history_model)
+        source_history_content_type = _content_type_for_model_label(event.source.history_model, using=using)
         source_history_id = event.source.history_id or ""
 
-    return ObjectStreamEvent.objects.create(
-        subject_content_type=_content_type_for_model_label(event.subject.model),
+    manager = ObjectStreamEvent.objects
+    if using is not None:
+        manager = manager.db_manager(using)
+
+    row = manager.create(
+        subject_content_type=_content_type_for_model_label(event.subject.model, using=using),
         subject_object_id=event.subject.pk,
-        source_content_type=_source_content_type(event.source),
+        source_content_type=_source_content_type(event.source, using=using),
         source_object_id=_source_object_id(event.source),
         source_history_content_type=source_history_content_type,
         source_history_id=source_history_id,
@@ -75,12 +83,15 @@ def create_outbox_event(event: StreamEvent) -> ObjectStreamEvent:
         after=event.after,
         metadata=dict(event.metadata),
     )
+    if notify:
+        notify_outbox_event(row.pk, using=using)
+    return row
 
 
-def enqueue_outbox_event(event: StreamEvent, *, using: str | None = None) -> None:
+def enqueue_outbox_event(event: StreamEvent, *, using: str | None = None, notify: bool = True) -> None:
     """Write an event after the current database transaction commits."""
 
-    transaction.on_commit(lambda: create_outbox_event(event), using=using)
+    transaction.on_commit(lambda: create_outbox_event(event, notify=notify, using=using), using=using)
 
 
 def latest_outbox_cursor() -> int:

@@ -89,12 +89,14 @@ class _BaseSubscriptionSession:
         registration: ObjectStreamRegistration,
         request: SubscriptionRequest,
     ) -> models.QuerySet:
-        filters = request.filters if request.kind == SubscriptionKind.FILTER else None
-        queryset = registration.get_queryset(
-            self.user,
-            filters,
-            request=self.request,
-        )
+        if request.kind == SubscriptionKind.FILTER:
+            queryset = registration.get_queryset(
+                self.user,
+                request.filters,
+                request=self.request,
+            )
+        else:
+            queryset = registration.visibility.get_queryset(self.user, registration.model, action="read")
         if request.kind == SubscriptionKind.OBJECT:
             queryset = queryset.filter(pk=request.pk)
         return queryset

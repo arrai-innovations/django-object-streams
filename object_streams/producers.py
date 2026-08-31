@@ -72,12 +72,14 @@ def create_source_events(
     before: Mapping[str, Any] | None = None,
     after: Mapping[str, Any] | None = None,
     metadata: Mapping[str, Any] | None = None,
+    notify: bool = True,
     registry: ObjectStreamRegistry = default_registry,
+    using: str | None = None,
 ) -> tuple[ObjectStreamEvent, ...]:
     """Create outbox rows for a changed source instance immediately."""
 
     return tuple(
-        create_outbox_event(event)
+        create_outbox_event(event, notify=notify, using=using)
         for event in build_source_events(
             instance,
             op=op,
@@ -98,6 +100,7 @@ def enqueue_source_events(
     before: Mapping[str, Any] | None = None,
     after: Mapping[str, Any] | None = None,
     metadata: Mapping[str, Any] | None = None,
+    notify: bool = True,
     registry: ObjectStreamRegistry = default_registry,
     using: str | None = None,
 ) -> tuple[StreamEvent, ...]:
@@ -113,7 +116,7 @@ def enqueue_source_events(
         registry=registry,
     )
     for event in events:
-        enqueue_outbox_event(event, using=using)
+        enqueue_outbox_event(event, using=using, notify=notify)
     return events
 
 

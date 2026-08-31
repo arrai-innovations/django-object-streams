@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import django_filters
@@ -5,6 +6,7 @@ import pytest
 from asgiref.sync import async_to_sync
 from asgiref.testing import ApplicationCommunicator
 from channels.db import database_sync_to_async
+from django.test import override_settings
 
 from object_streams.events import EventOperation
 from object_streams.events import ObjectRef
@@ -12,6 +14,7 @@ from object_streams.events import StreamEvent
 from object_streams.outbox import create_outbox_event
 from object_streams.registry import ObjectStreamRegistry
 from object_streams.transports.channels import ObjectStreamConsumer
+from object_streams.transports.channels import broadcast_outbox_event
 from tests.testapp.models import Note
 
 
@@ -19,6 +22,13 @@ class NoteFilter(django_filters.FilterSet):
     class Meta:
         model = Note
         fields = ["title"]
+
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    },
+}
 
 
 def make_communicator(registry):
@@ -149,6 +159,188 @@ def test_object_stream_consumer_delivers_outbox_event_json():
             "changed_fields": ["title"],
             "fetch": True,
         }
+        await disconnect(communicator)
+
+    async_to_sync(run_test)()
+
+
+@override_settings(CHANNEL_LAYERS=CHANNEL_LAYERS)
+@pytest.mark.django_db(transaction=True)
+def test_broadcast_outbox_event_delivers_to_matching_consumers():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    note = Note.objects.create(title="Open")
+    filter_communicator = make_communicator(registry)
+    object_communicator = make_communicator(registry)
+
+    async def run_test():
+        await connect(filter_communicator)
+        await connect(object_communicator)
+        await send_json(
+            filter_communicator,
+            {
+                "op": "subscribe",
+                "kind": "filter",
+                "model": "testapp.Note",
+                "filter": {"title": "Open"},
+            },
+        )
+        filter_subscription = await receive_json(filter_communicator)
+        await send_json(
+            object_communicator,
+            {
+                "op": "subscribe",
+                "kind": "object",
+                "model": "testapp.Note",
+                "pk": note.pk,
+            },
+        )
+        object_subscription = await receive_json(object_communicator)
+
+        row = await database_sync_to_async(create_outbox_event)(
+            StreamEvent(
+                subject=ObjectRef.from_instance(note),
+                op=EventOperation.UPDATED,
+                changed_fields=("title",),
+            )
+        )
+        await broadcast_outbox_event(row.pk)
+
+        assert await receive_json(filter_communicator) == {
+            "type": "event",
+            "subscription_id": filter_subscription["subscription_id"],
+            "cursor": row.pk,
+            "subject": {"model": "testapp.Note", "pk": str(note.pk)},
+            "facet": "object",
+            "op": "updated",
+            "list_action": "changed",
+            "changed_fields": ["title"],
+            "fetch": True,
+        }
+        assert await receive_json(object_communicator) == {
+            "type": "event",
+            "subscription_id": object_subscription["subscription_id"],
+            "cursor": row.pk,
+            "subject": {"model": "testapp.Note", "pk": str(note.pk)},
+            "facet": "object",
+            "op": "updated",
+            "list_action": "changed",
+            "changed_fields": ["title"],
+            "fetch": True,
+        }
+        await disconnect(filter_communicator)
+        await disconnect(object_communicator)
+
+    async_to_sync(run_test)()
+
+
+@override_settings(CHANNEL_LAYERS=CHANNEL_LAYERS)
+@pytest.mark.django_db(transaction=True)
+def test_consumer_deduplicates_events_from_overlapping_groups():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    note = Note.objects.create(title="Open")
+    communicator = make_communicator(registry)
+
+    async def run_test():
+        await connect(communicator)
+        await send_json(
+            communicator,
+            {
+                "op": "subscribe",
+                "kind": "model",
+                "model": "testapp.Note",
+            },
+        )
+        model_subscription = await receive_json(communicator)
+        await send_json(
+            communicator,
+            {
+                "op": "subscribe",
+                "kind": "object",
+                "model": "testapp.Note",
+                "pk": note.pk,
+            },
+        )
+        object_subscription = await receive_json(communicator)
+
+        row = await database_sync_to_async(create_outbox_event)(
+            StreamEvent(
+                subject=ObjectRef.from_instance(note),
+                op=EventOperation.UPDATED,
+            )
+        )
+        await broadcast_outbox_event(row.pk)
+
+        model_event = await receive_json(communicator)
+        object_event = await receive_json(communicator)
+        assert model_event["subscription_id"] == model_subscription["subscription_id"]
+        assert object_event["subscription_id"] == object_subscription["subscription_id"]
+        assert model_event["cursor"] == row.pk
+        assert object_event["cursor"] == row.pk
+
+        await asyncio.sleep(0.05)
+        assert communicator.output_queue.empty()
+        await disconnect(communicator)
+
+    async_to_sync(run_test)()
+
+
+@override_settings(CHANNEL_LAYERS=CHANNEL_LAYERS)
+@pytest.mark.django_db(transaction=True)
+def test_unsubscribing_keeps_shared_group_until_last_subscription_leaves():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    note = Note.objects.create(title="Open")
+    communicator = make_communicator(registry)
+
+    async def run_test():
+        await connect(communicator)
+        await send_json(
+            communicator,
+            {
+                "op": "subscribe",
+                "kind": "model",
+                "model": "testapp.Note",
+            },
+        )
+        first_subscription = await receive_json(communicator)
+        assert first_subscription["type"] == "subscribed", first_subscription
+        await send_json(
+            communicator,
+            {
+                "op": "subscribe",
+                "kind": "filter",
+                "model": "testapp.Note",
+                "filter": {"title": "Open"},
+            },
+        )
+        remaining_subscription = await receive_json(communicator)
+        assert remaining_subscription["type"] == "subscribed", remaining_subscription
+
+        await send_json(
+            communicator,
+            {
+                "op": "unsubscribe",
+                "subscription_id": first_subscription["subscription_id"],
+            },
+        )
+        assert await receive_json(communicator) == {
+            "type": "unsubscribed",
+            "subscription_id": first_subscription["subscription_id"],
+        }
+
+        row = await database_sync_to_async(create_outbox_event)(
+            StreamEvent(
+                subject=ObjectRef.from_instance(note),
+                op=EventOperation.UPDATED,
+            )
+        )
+        await broadcast_outbox_event(row.pk)
+
+        event = await receive_json(communicator)
+        assert event["subscription_id"] == remaining_subscription["subscription_id"]
+        assert event["cursor"] == row.pk
         await disconnect(communicator)
 
     async_to_sync(run_test)()
