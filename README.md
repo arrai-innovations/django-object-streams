@@ -12,7 +12,8 @@ Pre-alpha. The current package includes the core registration API, a replayable
 outbox table, generic source-to-event producer helpers, and a connection-local
 subscription session runtime. A minimal Channels JSON websocket consumer is
 available with channel-layer fanout and PostgreSQL `LISTEN/NOTIFY` wakeups.
-History integrations are not implemented yet.
+A pruning command enforces outbox retention limits. History integrations are
+not implemented yet.
 
 ## Database Support
 
@@ -74,9 +75,9 @@ Register models that can be subscribed to:
 ```python
 import django_filters
 
+from object_streams import AllowAllVisibilityPolicy
+from object_streams import ModelSource
 from object_streams import register
-from object_streams.sources import ModelSource
-from object_streams.visibility import AllowAllVisibilityPolicy
 
 from store.models import CustomerOrder
 
@@ -98,7 +99,7 @@ register(
 Produce outbox events after application writes:
 
 ```python
-from object_streams.events import EventOperation
+from object_streams import EventOperation
 from object_streams.producers import enqueue_source_events
 
 
@@ -150,10 +151,200 @@ context as normal Django view filters. Clients may send either `filter` or
 `filters`. An empty filter object is valid and means no FilterSet constraints
 beyond visibility. Object and model subscriptions use visibility only.
 
-`SubscriptionSession` is intentionally imported from `object_streams.sessions`.
-It is not exported from the package root because it imports Django models.
+## Public Import Surface
 
-Route the minimal Channels consumer from your ASGI application:
+The package root exports only names that are safe to import before
+`django.setup()` runs:
+
+```python
+from object_streams import AllowAllVisibilityPolicy
+from object_streams import DenyAllVisibilityPolicy
+from object_streams import EventOperation
+from object_streams import ListAction
+from object_streams import ModelSource
+from object_streams import ObjectRef
+from object_streams import ObjectStreamRegistration
+from object_streams import ObjectStreamRegistry
+from object_streams import ResyncRequired
+from object_streams import Source
+from object_streams import SourceRef
+from object_streams import StreamEvent
+from object_streams import SubscriptionKind
+from object_streams import SubscriptionRequest
+from object_streams import VisibilityPolicy
+from object_streams import register
+from object_streams import registry
+```
+
+Registration errors (`ObjectStreamsError`, `RegistrationError`,
+`AlreadyRegistered`, `NotRegistered`, `FilterValidationError`) are exported from
+the root as well.
+
+Import the rest from their own modules, because they load Django models:
+`object_streams.models`, `object_streams.outbox`, `object_streams.postgres`,
+`object_streams.producers`, `object_streams.retention`,
+`object_streams.sessions`, and `object_streams.transports.channels`.
+
+## Protocol Reference
+
+The protocol is JSON messages in both directions. Client messages carry an
+`op`. Server messages carry a `type`.
+
+### Client to server
+
+`subscribe` registers one subscription and returns a `subscribed`
+acknowledgement.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `op` | yes | `"subscribe"`. |
+| `kind` | no | `"object"`, `"filter"`, or `"model"`. Defaults to `"object"`. |
+| `model` | yes | Model label, such as `"store.CustomerOrder"`. |
+| `pk` | for `object` | Primary key of the subscribed object. |
+| `filter` | no | FilterSet parameters. `filters` is accepted as an alias. |
+| `cursor` | no | Last cursor the client processed. Triggers replay. |
+| `subscription_id` | no | Client-chosen id. The server assigns `sub_N` when omitted. |
+| `search` | no | Rejected with `unsupported_search` for now. |
+| `ordering` | no | Accepted and echoed. Does not affect membership. |
+| `shape` | no | Accepted and echoed. Transport payload hint. |
+
+```json
+{"op": "subscribe", "kind": "filter", "model": "store.CustomerOrder", "filter": {"status": "open"}, "cursor": 120000}
+```
+
+`unsubscribe` removes one subscription.
+
+```json
+{"op": "unsubscribe", "subscription_id": "sub_7"}
+```
+
+### Server to client
+
+`subscribed` acknowledges a subscription. Its `cursor` is the outbox cursor the
+subscription starts from, which is the global cursor at subscribe time, not the
+cursor the client requested.
+
+```json
+{
+  "type": "subscribed",
+  "subscription_id": "sub_7",
+  "kind": "filter",
+  "model": "store.CustomerOrder",
+  "filter": {"status": "open"},
+  "cursor": 120044
+}
+```
+
+`unsubscribed` acknowledges removal.
+
+```json
+{
+  "type": "unsubscribed",
+  "subscription_id": "sub_7"
+}
+```
+
+`event` reports one subscription-relative change.
+
+```json
+{
+  "type": "event",
+  "subscription_id": "sub_7",
+  "cursor": 120044,
+  "subject": {"model": "store.CustomerOrder", "pk": "123"},
+  "facet": "workflow_state",
+  "op": "updated",
+  "list_action": "changed",
+  "changed_fields": ["workflow_state"],
+  "fetch": true
+}
+```
+
+`op` is the source operation: `created`, `updated`, or `deleted`.
+
+`list_action` is the effect on this subscription:
+
+| `list_action` | Meaning |
+|---|---|
+| `added` | The object now belongs in the subscribed set. |
+| `changed` | The object was in the set and still is. |
+| `removed` | The object left the set but still exists. |
+| `deleted` | The object was deleted. |
+
+Object subscriptions can usually ignore `list_action`. Filter and model
+subscriptions need it. Events with no effect on a subscription are not sent.
+
+`resync_required` is a subscription-level message for cases where the server
+cannot safely compute the delta. It carries no subject. The client should
+refetch through REST and resubscribe from the supplied `cursor`.
+
+```json
+{
+  "type": "resync_required",
+  "subscription_id": "sub_7",
+  "cursor": 120044,
+  "reason": "cursor_replay_unavailable"
+}
+```
+
+| `reason` | Cause |
+|---|---|
+| `cursor_replay_unavailable` | A filter or model subscription asked to replay from an older cursor. Collection membership cannot be recomputed from outbox rows alone. |
+| `object_replay_limit_exceeded` | An object subscription had more missed events than `replay_limit`, which defaults to 1000. |
+| `cursor_pruned` | The requested cursor is older than the retention watermark, so the missed rows are gone. |
+
+`error` reports a rejected message. `details` is present only when the error
+carries structured data, such as FilterSet validation errors.
+
+```json
+{
+  "type": "error",
+  "code": "invalid_filter",
+  "message": "Subscription filters are invalid.",
+  "details": {"status": ["Select a valid choice."]}
+}
+```
+
+| `code` | Cause |
+|---|---|
+| `invalid_request` | Unsupported `op`, missing `model`, missing `subscription_id`, or a non-object JSON message. |
+| `invalid_cursor` | The requested cursor is newer than the outbox. |
+| `invalid_filter` | FilterSet validation failed. `details` carries the errors. |
+| `not_found` | An object subscription target does not exist or is not visible. |
+| `not_subscribed` | Unsubscribe named an inactive subscription. |
+| `unsupported_search` | The request included `search`. |
+| `invalid_event` | A fanout message arrived without an outbox id. |
+| `event_not_found` | A fanout message named an outbox row that does not exist. |
+
+## Deployment
+
+### Process topology
+
+A production deployment runs three kinds of process against one PostgreSQL
+database and one process-shared channel layer:
+
+```text
+ASGI workers      run ObjectStreamConsumer, hold connection-local subscriptions
+listener process  runs object_streams_listen, turns NOTIFY into channel fanout
+application       writes model changes and outbox rows
+```
+
+The path from a write to a client is:
+
+```text
+application transaction commits
+outbox row is created and NOTIFY sends its id
+listener receives the id and loads the row
+listener fans the row out to Channels groups
+each ASGI worker evaluates the row against its own subscriptions
+consumer sends subscription-relative messages
+```
+
+Subscription state is connection-local. Every worker evaluates visibility and
+filter membership for its own connections, so no permission decision is shared
+between processes. Only outbox ids cross the channel layer.
+
+### ASGI routing
 
 ```python
 from channels.routing import ProtocolTypeRouter
@@ -174,85 +365,94 @@ application = ProtocolTypeRouter(
 )
 ```
 
-The consumer accepts websocket subscription messages, joins deterministic
-Channels groups for active subscriptions, and publishes outbox rows when it
-receives an `object.stream.event` ASGI message containing `id` or `outbox_id`.
-Object subscriptions join object groups. Filter and model subscriptions join
-model groups, then each consumer evaluates the event against its own
-connection-local subscriptions and visibility policy.
+The consumer joins deterministic Channels groups for active subscriptions and
+publishes outbox rows when it receives an `object.stream.event` ASGI message
+containing `id` or `outbox_id`. Object subscriptions join object groups. Filter
+and model subscriptions join model groups, then each consumer evaluates the
+event against its own connection-local subscriptions and visibility policy.
 
-Run the PostgreSQL listener as a separate Django process:
+Your ASGI workers can run under Uvicorn, Daphne, or another ASGI server.
+
+### Channel layer
+
+The listener and the ASGI workers are separate processes, so the in-memory
+channel layer will not deliver between them. Production deployments need a
+process-shared layer such as Redis:
+
+```python
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": ["redis://127.0.0.1:6379/0"],
+        },
+    },
+}
+```
+
+Install `channels-redis` alongside this package to use that backend. Every ASGI
+worker and the listener process must point at the same layer.
+
+### Listener process
 
 ```console
 python manage.py object_streams_listen
 ```
 
-That process listens for outbox notifications and fans each id out through the
-configured Channels layer. Your ASGI workers can run under Uvicorn, Daphne, or
-another ASGI server; the listener is separate from the WebSocket workers.
-Use a process-shared channel layer, such as Redis, for production deployments.
-The default PostgreSQL notification channel is `object_streams_events`; set
-`OBJECT_STREAMS_NOTIFY_CHANNEL` to override it.
+| Option | Meaning |
+|---|---|
+| `--database` | Database alias to listen on. Defaults to `default`. |
+| `--channel` | PostgreSQL notification channel. Defaults to the configured channel. |
+| `--timeout` | Maximum seconds to wait for a notification before returning. |
+| `--once` | Broadcast one notification and exit. |
+| `--retry-delay` | Seconds to wait before retrying after a database error. Defaults to 1. |
+| `--max-retries` | Maximum reconnect attempts. Defaults to retrying forever. |
 
-Use `--once --timeout <seconds>` for smoke tests or supervisor health checks.
-The listener retries database errors by default. Set `--retry-delay <seconds>`
-and `--max-retries <count>` to control reconnect behavior.
+The listener retries database errors by default, so a PostgreSQL restart does
+not need a supervisor restart. Use `--once --timeout <seconds>` for smoke tests
+or supervisor health checks.
 
-Client subscription messages look like:
+### Settings
 
-```json
-{"op": "subscribe", "kind": "filter", "model": "store.CustomerOrder", "filter": {"status": "open"}, "cursor": 120000}
+| Setting | Default | Meaning |
+|---|---|---|
+| `OBJECT_STREAMS_NOTIFY_CHANNEL` | `object_streams_events` | PostgreSQL `LISTEN/NOTIFY` channel carrying committed outbox ids. Must be an unquoted identifier of 63 bytes or fewer. |
+| `OBJECT_STREAMS_RETENTION_DAYS` | `None` | Age limit for outbox rows, in days. `None` keeps every row. |
+| `OBJECT_STREAMS_RETENTION_MAX_ROWS` | `None` | Row limit for the outbox. `None` keeps every row. |
+
+Give each deployment sharing a database its own
+`OBJECT_STREAMS_NOTIFY_CHANNEL` so listeners do not wake on ids they cannot
+load.
+
+## Outbox Retention
+
+The outbox grows without bound until it is pruned. Configure a limit and run
+the pruning command on a schedule:
+
+```python
+OBJECT_STREAMS_RETENTION_DAYS = 30
+OBJECT_STREAMS_RETENTION_MAX_ROWS = 5_000_000
 ```
 
-Subscribed acknowledgements look like:
-
-```json
-{
-  "type": "subscribed",
-  "subscription_id": "sub_7",
-  "kind": "filter",
-  "model": "store.CustomerOrder",
-  "filter": {"status": "open"},
-  "cursor": 120044
-}
+```console
+python manage.py object_streams_prune
 ```
 
-Unsubscribe acknowledgements look like:
+When both limits are set, the stricter one wins. `--days` and `--max-rows`
+override the settings, `--dry-run` reports what would be deleted, and
+`--database` selects a database alias.
 
-```json
-{
-  "type": "unsubscribed",
-  "subscription_id": "sub_7"
-}
-```
+Retention sets the cursor contract. Pick a window longer than the longest
+client disconnect you want to replay rather than resync.
 
-Subscription-relative event messages look like:
+Two properties keep pruning safe:
 
-```json
-{
-  "type": "event",
-  "subscription_id": "sub_7",
-  "cursor": 120044,
-  "subject": {"model": "store.CustomerOrder", "pk": "123"},
-  "facet": "workflow_state",
-  "op": "updated",
-  "list_action": "changed",
-  "changed_fields": ["workflow_state"],
-  "fetch": true
-}
-```
-
-When the session cannot safely replay collection changes after a cursor, it
-sends a subscription-level resync message instead of a subject-bearing event:
-
-```json
-{
-  "type": "resync_required",
-  "subscription_id": "sub_7",
-  "cursor": 120044,
-  "reason": "cursor_replay_unavailable"
-}
-```
+- Pruning never deletes the newest retained row. The global cursor never moves
+  backwards, so a returning client never sees `invalid_cursor` for a cursor it
+  legitimately holds.
+- Pruning records how far it deleted. A client that reconnects with a cursor
+  older than that watermark receives `resync_required` with reason
+  `cursor_pruned` rather than a silent, empty catch-up.
 
 ## Development
 
@@ -277,10 +477,17 @@ the database variables there.
 ```console
 just check
 just test
+just coverage
 ```
+
+CI enforces a coverage floor of 80 percent.
 
 Package code follows standard uv, setuptools, ruff, pytest-django, and Justfile
 conventions for a focused Django library.
+
+## License
+
+BSD 3-Clause. See [LICENSE](LICENSE).
 
 [coverage]: https://docs.arrai.dev/django-object-streams/artifacts/main/htmlcov_pytest/
 [coverage status]: https://docs.arrai.dev/django-object-streams/artifacts/main/coverage.svg

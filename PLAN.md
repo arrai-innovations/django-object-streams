@@ -30,19 +30,22 @@ remaining decisions have been implemented, rejected, or moved here.
 - [x] Done: Channels JSON WebSocket consumer.
 - [x] Done: channel-layer fanout from the listener to WebSocket workers.
 - [x] Done: Redis-backed live listener integration coverage.
+- [x] Done: outbox retention limits, pruning command, and a pruning watermark
+  that turns a pruned cursor into `resync_required`.
 
 ## Release Cleanup
 
-- [ ] Next: add a `LICENSE` file matching the package metadata.
-- [ ] Next: confirm the package publication path and keep install docs accurate.
-- [ ] Next: add CI for supported Python and Django versions.
-- [ ] Next: choose and enforce a coverage floor.
-- [ ] Next: review the public import surface before publishing.
-- [ ] Next: write a compact protocol reference for subscribe, unsubscribe,
-  subscribed, event, error, and resync messages.
-- [ ] Next: document production process topology: ASGI workers, listener
-  process, PostgreSQL, and a process-shared channel layer.
-- [ ] Next: add outbox retention settings and a pruning command.
+- [x] Done: `LICENSE` file matching the package metadata.
+- [x] Done: CI for supported Python and Django versions.
+- [x] Done: coverage floor of 80 percent enforced through `fail_under`.
+- [x] Done: public import surface limited to names that are safe to import
+  before `django.setup()`, with a regression test.
+- [x] Done: protocol reference for subscribe, unsubscribe, subscribed,
+  unsubscribed, event, error, and resync messages.
+- [x] Done: production process topology, channel layer, and settings reference.
+- [x] Done: outbox retention settings and a pruning command.
+- [ ] Next: publish the first pre-alpha to PyPI and update the install docs to
+  drop the GitHub fallback.
 
 ## Subscription Semantics
 
@@ -76,9 +79,12 @@ remaining decisions have been implemented, rejected, or moved here.
 - [x] Done: listener management command.
 - [x] Done: listener reconnect behavior for database errors.
 - [x] Done: bounded listener mode for smoke tests and health checks.
-- [ ] Next: add deployment notes for Redis or another process-shared Channels
+- [x] Done: deployment notes for Redis or another process-shared Channels
   layer.
-- [ ] Next: document `OBJECT_STREAMS_NOTIFY_CHANNEL`.
+- [x] Done: settings reference for `OBJECT_STREAMS_NOTIFY_CHANNEL`,
+  `OBJECT_STREAMS_RETENTION_DAYS`, and `OBJECT_STREAMS_RETENTION_MAX_ROWS`.
+- [ ] Later: report pruning progress and retention lag from the pruning
+  command.
 - [ ] Later: add structured logging around listener wakeups, fanout, and
   malformed notifications.
 - [ ] Later: add metrics hooks for outbox lag, fanout count, and active
@@ -88,10 +94,12 @@ remaining decisions have been implemented, rejected, or moved here.
 
 - [x] Done: registry, event, outbox, producer, session, async session, Channels,
   PostgreSQL, and Redis-backed listener coverage.
-- [ ] Next: add CI matrix coverage for Python 3.11 to 3.14.
-- [ ] Next: add CI matrix coverage for Django 5.2, 6.0, and 6.1.
-- [ ] Next: make the Redis integration test conditional in CI through an
-  explicit service configuration.
+- [x] Done: CI matrix coverage for Python 3.11 to 3.14.
+- [x] Done: CI matrix coverage for Django 5.2, 6.0, and 6.1.
+- [x] Done: Redis integration test enabled in CI through an explicit service
+  configuration.
+- [x] Done: retention, pruning, pruned-cursor replay, and public import surface
+  coverage.
 - [ ] Later: add compatibility tests for non-integer primary keys.
 
 ## External Boundaries

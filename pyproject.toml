@@ -8,6 +8,7 @@ description = "Permission-aware object and queryset subscriptions for Django."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 authors = [
     { name = "Arrai Innovations", email = "support@arrai.com" },
 ]
@@ -80,6 +81,7 @@ omit = [
 directory = "htmlcov/"
 
 [tool.coverage.report]
+fail_under = 80
 exclude_lines = [
     "pragma: no cover",
     "raise NotImplementedError",
