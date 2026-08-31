@@ -1,5 +1,7 @@
 # Django Object Streams
 
+![pytest status][] [![coverage status][]][coverage] ![ruff status][] ![pysentry status][]
+
 `django-object-streams` is a Django library for lightweight, permission-aware, filter-aware subscriptions to model objects and querysets.
 
 It is designed to tell clients what changed and whether they should refetch through the canonical REST API. It is not a replacement for REST, a generic Channels wrapper, or an activity feed library.
@@ -279,3 +281,9 @@ just test
 
 Package code follows standard uv, setuptools, ruff, pytest-django, and Justfile
 conventions for a focused Django library.
+
+[coverage]: https://docs.arrai.dev/django-object-streams/artifacts/main/htmlcov_pytest/
+[coverage status]: https://docs.arrai.dev/django-object-streams/artifacts/main/coverage.svg
+[pysentry status]: https://docs.arrai.dev/django-object-streams/artifacts/main/pysentry.svg
+[pytest status]: https://docs.arrai.dev/django-object-streams/artifacts/main/pytest.svg
+[ruff status]: https://docs.arrai.dev/django-object-streams/artifacts/main/ruff.svg
