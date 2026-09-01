@@ -7,24 +7,33 @@ import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import DatabaseError
+from django.db import close_old_connections
 from django.db import connection
+from django.db import transaction
 
 from object_streams import postgres
 from object_streams.events import EventOperation
 from object_streams.events import ObjectRef
 from object_streams.events import StreamEvent
+from object_streams.management.commands.object_streams_listen import Command as ListenCommand
+from object_streams.models import ObjectStreamEvent
+from object_streams.outbox import assign_outbox_cursors
+from object_streams.outbox import broadcasted_through_cursor
 from object_streams.outbox import create_outbox_event
+from object_streams.outbox import outbox_events_after
 from object_streams.postgres import validate_notify_channel
 from object_streams.producers import create_source_events
 from object_streams.registry import ObjectStreamRegistry
 from object_streams.sources import ModelSource
 from tests.testapp.models import Note
+from tests.testapp.models import TriggeredNote
 
 
 LISTEN_TIMEOUT = 0.1
 LISTEN_STOP_AFTER = 3
 LISTENER_CHANNEL = "object_streams_listener_test"
 LISTENER_COMMAND_TIMEOUT = 3
+LISTENER_JOIN_TIMEOUT = 5
 LISTENER_ATTEMPTS = 20
 LISTENER_POLL_TIMEOUT = 0.1
 RETRY_TEST_ATTEMPTS = 2
@@ -154,8 +163,8 @@ def test_listener_command_broadcasts_producer_notification(settings, monkeypatch
 
     listener_thread = threading.Thread(target=listen_once, daemon=True)
     listener_thread.start()
-    produced_cursors = set()
-    broadcasted_id = None
+    produced_ids = set()
+    broadcasted_row = None
 
     try:
         for attempt in range(LISTENER_ATTEMPTS):
@@ -167,49 +176,101 @@ def test_listener_command_broadcasts_producer_notification(settings, monkeypatch
                 changed_fields=("title",),
                 registry=registry,
             )
-            produced_cursors.update(row.pk for row in rows)
+            produced_ids.update(row.pk for row in rows)
             try:
-                broadcasted_id = broadcasts.get(timeout=LISTENER_POLL_TIMEOUT)
+                broadcasted_row = broadcasts.get(timeout=LISTENER_POLL_TIMEOUT)
             except queue.Empty:
                 if not listener_thread.is_alive() and not listener_result.empty():
                     break
                 continue
             break
 
-        listener_thread.join(timeout=LISTENER_COMMAND_TIMEOUT)
+        listener_thread.join(timeout=LISTENER_JOIN_TIMEOUT)
         assert not listener_thread.is_alive()
         result = listener_result.get_nowait()
         if result is not None:
             raise result
     finally:
-        listener_thread.join(timeout=LISTENER_COMMAND_TIMEOUT)
+        listener_thread.join(timeout=LISTENER_JOIN_TIMEOUT)
 
-    assert broadcasted_id in produced_cursors
+    assert broadcasted_row in produced_ids
 
 
-def test_listen_command_broadcasts_received_event_id(monkeypatch):
-    calls = []
+@pytest.mark.django_db(transaction=True)
+def test_listener_command_drains_rows_captured_before_it_starts(monkeypatch):
+    note = Note.objects.create(title="Open")
+    row = create_outbox_event(
+        StreamEvent(subject=ObjectRef.from_instance(note), op=EventOperation.UPDATED),
+        notify=False,
+    )
+    broadcasts = []
+    monkeypatch.setattr(
+        "object_streams.management.commands.object_streams_listen.broadcast_outbox_event_sync",
+        broadcasts.append,
+    )
+
+    call_command(
+        "object_streams_listen",
+        "--once",
+        "--timeout",
+        "0",
+        verbosity=0,
+    )
+
+    assert broadcasts == [row.pk]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_listener_retries_a_row_when_fanout_failed_before_the_watermark(monkeypatch):
+    note = Note.objects.create(title="Open")
+    row = create_outbox_event(
+        StreamEvent(subject=ObjectRef.from_instance(note), op=EventOperation.UPDATED),
+        notify=False,
+    )
+    command = ListenCommand()
+
+    def fail_fanout(event_id):
+        raise RuntimeError("channel layer unavailable")
+
+    monkeypatch.setattr(
+        "object_streams.management.commands.object_streams_listen.broadcast_outbox_event_sync",
+        fail_fanout,
+    )
+    with pytest.raises(RuntimeError, match="channel layer unavailable"):
+        command._drain_pending(database="default", once=True, verbosity=0)
+
+    assert broadcasted_through_cursor() == 0
+
+    broadcasts = []
+    monkeypatch.setattr(
+        "object_streams.management.commands.object_streams_listen.broadcast_outbox_event_sync",
+        broadcasts.append,
+    )
+    assert command._drain_pending(database="default", once=True, verbosity=0) == 1
+    assert broadcasts == [row.pk]
+    assert broadcasted_through_cursor() == row.cursor
+
+
+def test_listen_command_drains_after_listening(monkeypatch):
+    drains = []
     stdout = StringIO()
 
     def fake_listen_outbox_event_ids(**kwargs):
-        assert kwargs == {
-            "using": "default",
-            "channel": "object_streams_command_test",
-            "timeout": None,
-            "stop_after": 1,
-        }
-        yield 42
-
-    def fake_broadcast_outbox_event_sync(event_id):
-        calls.append(event_id)
+        assert kwargs["using"] == "default"
+        assert kwargs["channel"] == "object_streams_command_test"
+        assert kwargs["timeout"] is None
+        assert kwargs["stop_after"] == 1
+        assert kwargs["on_listening"]() is True
+        return
+        yield
 
     monkeypatch.setattr(
         "object_streams.management.commands.object_streams_listen.listen_outbox_event_ids",
         fake_listen_outbox_event_ids,
     )
     monkeypatch.setattr(
-        "object_streams.management.commands.object_streams_listen.broadcast_outbox_event_sync",
-        fake_broadcast_outbox_event_sync,
+        "object_streams.management.commands.object_streams_listen.Command._drain_pending",
+        lambda self, **kwargs: drains.append(kwargs) or 1,
     )
 
     call_command(
@@ -220,9 +281,8 @@ def test_listen_command_broadcasts_received_event_id(monkeypatch):
         stdout=stdout,
     )
 
-    assert calls == [42]
+    assert drains == [{"database": "default", "once": True, "verbosity": 1}]
     assert "Listening for object stream events" in stdout.getvalue()
-    assert "Broadcasted object stream event 42." in stdout.getvalue()
 
 
 def test_listen_command_errors_when_once_times_out(monkeypatch):
@@ -245,7 +305,7 @@ def test_listen_command_rejects_negative_retry_options():
 
 def test_listen_command_retries_database_errors(monkeypatch):
     calls = []
-    broadcasts = []
+    drains = []
     closes = []
     sleeps = []
 
@@ -253,15 +313,17 @@ def test_listen_command_retries_database_errors(monkeypatch):
         calls.append(kwargs)
         if len(calls) == 1:
             raise DatabaseError("temporary database error")
-        yield 42
+        assert kwargs["on_listening"]() is True
+        return
+        yield
 
     monkeypatch.setattr(
         "object_streams.management.commands.object_streams_listen.listen_outbox_event_ids",
         fake_listen_outbox_event_ids,
     )
     monkeypatch.setattr(
-        "object_streams.management.commands.object_streams_listen.broadcast_outbox_event_sync",
-        broadcasts.append,
+        "object_streams.management.commands.object_streams_listen.Command._drain_pending",
+        lambda self, **kwargs: drains.append(kwargs) or 1,
     )
     monkeypatch.setattr(
         "object_streams.management.commands.object_streams_listen.connections",
@@ -286,9 +348,46 @@ def test_listen_command_retries_database_errors(monkeypatch):
     )
 
     assert len(calls) == RETRY_TEST_ATTEMPTS
-    assert broadcasts == [42]
+    assert drains == [{"database": "default", "once": True, "verbosity": 1}]
     assert closes == ["default", "default"]
     assert sleeps == [0.0]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_delivery_cursors_follow_commit_visibility_instead_of_capture_ids():
+    first_inserted = threading.Event()
+    allow_first_commit = threading.Event()
+    results = queue.Queue()
+
+    def create_first():
+        close_old_connections()
+        try:
+            with transaction.atomic():
+                note = TriggeredNote.objects.create(title="First")
+                results.put(("first", note.pk))
+                first_inserted.set()
+                assert allow_first_commit.wait(timeout=LISTENER_COMMAND_TIMEOUT)
+        finally:
+            close_old_connections()
+
+    first_thread = threading.Thread(target=create_first)
+    first_thread.start()
+    assert first_inserted.wait(timeout=LISTENER_COMMAND_TIMEOUT)
+
+    second = TriggeredNote.objects.create(title="Second")
+    assign_outbox_cursors()
+    second_row = ObjectStreamEvent.objects.get(subject_object_id=str(second.pk))
+
+    allow_first_commit.set()
+    first_thread.join(timeout=LISTENER_COMMAND_TIMEOUT)
+    assert not first_thread.is_alive()
+    _, first_pk = results.get_nowait()
+    assign_outbox_cursors()
+    first_row = ObjectStreamEvent.objects.get(subject_object_id=str(first_pk))
+
+    assert first_row.pk < second_row.pk
+    assert second_row.cursor < first_row.cursor
+    assert list(outbox_events_after(second_row.cursor).values_list("pk", flat=True)) == [first_row.pk]
 
 
 def test_listen_command_errors_after_max_retries(monkeypatch):

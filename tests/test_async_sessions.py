@@ -6,10 +6,11 @@ from object_streams.events import EventOperation
 from object_streams.events import ListAction
 from object_streams.events import ObjectRef
 from object_streams.events import StreamEvent
-from object_streams.outbox import create_outbox_event
+from object_streams.outbox import record_broadcasted_through
 from object_streams.registry import ObjectStreamRegistry
 from object_streams.retention import prune_outbox
 from object_streams.sessions import AsyncSubscriptionSession
+from tests.helpers import create_deliverable_outbox_event as create_outbox_event
 from tests.testapp.models import Note
 
 
@@ -152,12 +153,12 @@ def test_async_session_filter_replay_sends_resync_without_subject():
         }
     )
 
-    assert subscription.cursor == row.pk
+    assert subscription.cursor == row.cursor
     assert session.transport.events == []
     assert session.transport.resyncs[0].as_dict() == {
         "type": "resync_required",
         "subscription_id": "sub_1",
-        "cursor": row.pk,
+        "cursor": row.cursor,
         "reason": "cursor_replay_unavailable",
     }
 
@@ -186,12 +187,12 @@ def test_async_session_object_replay_sends_subject_events_after_cursor():
         }
     )
 
-    assert subscription.cursor == row.pk
+    assert subscription.cursor == row.cursor
     assert [event.as_dict() for event in session.transport.events] == [
         {
             "type": "event",
             "subscription_id": "sub_1",
-            "cursor": row.pk,
+            "cursor": row.cursor,
             "subject": {"model": "testapp.Note", "pk": str(note.pk)},
             "facet": "object",
             "op": "updated",
@@ -214,6 +215,7 @@ def test_async_object_replay_resyncs_when_the_cursor_was_pruned():
         )
         for _ in range(3)
     ]
+    record_broadcasted_through(rows[-1].cursor)
     prune_outbox(max_rows=1)
     session = make_session(registry)
 
@@ -223,15 +225,15 @@ def test_async_object_replay_resyncs_when_the_cursor_was_pruned():
             "kind": "object",
             "model": "testapp.Note",
             "pk": note.pk,
-            "cursor": rows[0].pk,
+            "cursor": rows[0].cursor,
         }
     )
 
-    assert subscription.cursor == rows[2].pk
+    assert subscription.cursor == rows[2].cursor
     assert session.transport.events == []
     assert session.transport.resyncs[0].as_dict() == {
         "type": "resync_required",
         "subscription_id": "sub_1",
-        "cursor": rows[2].pk,
+        "cursor": rows[2].cursor,
         "reason": "cursor_pruned",
     }

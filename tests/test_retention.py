@@ -10,14 +10,15 @@ from object_streams.events import EventOperation
 from object_streams.events import ObjectRef
 from object_streams.events import StreamEvent
 from object_streams.models import ObjectStreamEvent
-from object_streams.outbox import create_outbox_event
 from object_streams.outbox import latest_outbox_cursor
 from object_streams.outbox import pruned_through_cursor
+from object_streams.outbox import record_broadcasted_through
 from object_streams.outbox import replay_is_complete
 from object_streams.retention import get_retention_days
 from object_streams.retention import get_retention_max_rows
 from object_streams.retention import prune_outbox
 from object_streams.retention import retention_cutoff
+from tests.helpers import create_deliverable_outbox_event
 from tests.testapp.models import Note
 
 
@@ -27,13 +28,14 @@ RETENTION_MAX_ROWS = 100_000
 
 def make_rows(count):
     note = Note.objects.create(title="Open")
-    return [
-        create_outbox_event(
+    rows = [
+        create_deliverable_outbox_event(
             StreamEvent(subject=ObjectRef.from_instance(note), op=EventOperation.UPDATED),
-            notify=False,
         )
         for _ in range(count)
     ]
+    record_broadcasted_through(rows[-1].cursor)
+    return rows
 
 
 def retained_ids():
@@ -90,7 +92,7 @@ def test_prune_outbox_keeps_the_newest_row_when_every_row_is_expired():
 
     assert deleted == len(rows[:2])
     assert retained_ids() == [rows[2].pk]
-    assert latest_outbox_cursor() == rows[2].pk
+    assert latest_outbox_cursor() == rows[2].cursor
 
 
 @pytest.mark.django_db
@@ -118,9 +120,9 @@ def test_prune_outbox_records_the_pruning_watermark():
 
     prune_outbox(max_rows=2)
 
-    assert pruned_through_cursor() == rows[1].pk
-    assert replay_is_complete(rows[1].pk) is True
-    assert replay_is_complete(rows[0].pk) is False
+    assert pruned_through_cursor() == rows[1].cursor
+    assert replay_is_complete(rows[1].cursor) is True
+    assert replay_is_complete(rows[0].cursor) is False
 
 
 @pytest.mark.django_db
@@ -130,7 +132,7 @@ def test_prune_outbox_watermark_only_moves_forward():
     prune_outbox(max_rows=2)
     prune_outbox(max_rows=5)
 
-    assert pruned_through_cursor() == rows[3].pk
+    assert pruned_through_cursor() == rows[3].cursor
 
 
 @pytest.mark.django_db

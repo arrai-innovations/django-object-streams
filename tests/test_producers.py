@@ -5,6 +5,7 @@ from object_streams.events import EventOperation
 from object_streams.events import ObjectRef
 from object_streams.events import SourceRef
 from object_streams.models import ObjectStreamEvent
+from object_streams.outbox import assign_outbox_cursors
 from object_streams.producers import build_source_events
 from object_streams.producers import create_source_events
 from object_streams.producers import enqueue_source_events
@@ -88,8 +89,10 @@ def test_create_source_events_writes_outbox_rows():
 
     assert len(rows) == 1
     assert ObjectStreamEvent.objects.count() == 1
+    assign_outbox_cursors()
+    rows[0].refresh_from_db(fields=["cursor"])
     event = rows[0].to_stream_event()
-    assert event.cursor == rows[0].pk
+    assert event.cursor == rows[0].cursor
     assert event.subject == ObjectRef.from_instance(note)
     assert event.source == SourceRef.from_instance(note)
     assert event.op == "created"

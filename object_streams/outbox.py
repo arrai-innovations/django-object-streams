@@ -16,11 +16,15 @@ from object_streams.postgres import notify_outbox_event
 
 
 __all__ = (
+    "assign_outbox_cursors",
+    "broadcasted_through_cursor",
     "create_outbox_event",
     "enqueue_outbox_event",
     "latest_outbox_cursor",
     "outbox_events_after",
+    "outbox_events_pending_broadcast",
     "pruned_through_cursor",
+    "record_broadcasted_through",
     "record_pruned_through",
     "replay_is_complete",
 )
@@ -87,6 +91,10 @@ def create_outbox_event(event: StreamEvent, *, notify: bool = True, using: str |
         after=event.after,
         metadata=dict(event.metadata),
     )
+    connection = transaction.get_connection(using=using)
+    if not connection.in_atomic_block:
+        assign_outbox_cursors(using=using)
+        row.refresh_from_db(fields=["cursor"], using=using)
     if notify:
         notify_outbox_event(row.pk, using=using)
     return row
@@ -98,31 +106,77 @@ def enqueue_outbox_event(event: StreamEvent, *, using: str | None = None, notify
     transaction.on_commit(lambda: create_outbox_event(event, notify=notify, using=using), using=using)
 
 
-def latest_outbox_cursor() -> int:
+def _state_manager(using: str | None = None):
+    manager = ObjectStreamOutboxState.objects
+    if using is not None:
+        manager = manager.db_manager(using)
+    return manager
+
+
+def assign_outbox_cursors(*, using: str | None = None, limit: int | None = None) -> tuple[ObjectStreamEvent, ...]:
+    """Assign commit-visible delivery cursors to captured outbox rows."""
+
+    manager = ObjectStreamEvent.objects
+    if using is not None:
+        manager = manager.db_manager(using)
+
+    with transaction.atomic(using=using):
+        state, _ = _state_manager(using).select_for_update().get_or_create(pk=1)
+        queryset = manager.select_for_update().filter(cursor__isnull=True).order_by("id")
+        if limit is not None:
+            queryset = queryset[:limit]
+        rows = list(queryset)
+        if not rows:
+            return ()
+
+        next_cursor = state.next_cursor
+        for row in rows:
+            row.cursor = next_cursor
+            next_cursor += 1
+        manager.bulk_update(rows, ["cursor"])
+        state.next_cursor = next_cursor
+        state.save(update_fields=["next_cursor"])
+    return tuple(rows)
+
+
+def latest_outbox_cursor(*, using: str | None = None) -> int:
     """Return the latest global outbox cursor, or 0 when the outbox is empty."""
 
-    return ObjectStreamEvent.objects.order_by("-id").values_list("id", flat=True).first() or 0
+    manager = ObjectStreamEvent.objects
+    if using is not None:
+        manager = manager.db_manager(using)
+    return manager.filter(cursor__isnull=False).order_by("-cursor").values_list("cursor", flat=True).first() or 0
 
 
 def pruned_through_cursor(*, using: str | None = None) -> int:
     """Return the highest outbox cursor removed by retention pruning."""
 
-    manager = ObjectStreamOutboxState.objects
-    if using is not None:
-        manager = manager.db_manager(using)
-    return manager.values_list("pruned_through", flat=True).first() or 0
+    return _state_manager(using).values_list("pruned_through", flat=True).first() or 0
+
+
+def broadcasted_through_cursor(*, using: str | None = None) -> int:
+    """Return the highest delivery cursor successfully fanned out by the listener."""
+
+    return _state_manager(using).values_list("broadcasted_through", flat=True).first() or 0
 
 
 def record_pruned_through(cursor: int, *, using: str | None = None) -> None:
     """Raise the pruning watermark to a cursor that has been deleted."""
 
-    manager = ObjectStreamOutboxState.objects
-    if using is not None:
-        manager = manager.db_manager(using)
-    state, created = manager.get_or_create(pk=1, defaults={"pruned_through": cursor})
+    state, created = _state_manager(using).get_or_create(pk=1, defaults={"pruned_through": cursor})
     if not created and cursor > state.pruned_through:
         state.pruned_through = cursor
         state.save(update_fields=["pruned_through"])
+
+
+def record_broadcasted_through(cursor: int, *, using: str | None = None) -> None:
+    """Advance the durable listener watermark after successful fanout."""
+
+    with transaction.atomic(using=using):
+        state, _ = _state_manager(using).select_for_update().get_or_create(pk=1)
+        if cursor > state.broadcasted_through:
+            state.broadcasted_through = cursor
+            state.save(update_fields=["broadcasted_through"])
 
 
 def replay_is_complete(cursor: int) -> bool:
@@ -141,9 +195,9 @@ def outbox_events_after(
 ) -> models.QuerySet:
     """Return outbox rows after a cursor, optionally scoped to a model or subject."""
 
-    queryset = ObjectStreamEvent.objects.filter(id__gt=cursor).order_by("id")
+    queryset = ObjectStreamEvent.objects.filter(cursor__gt=cursor).order_by("cursor")
     if through_cursor is not None:
-        queryset = queryset.filter(id__lte=through_cursor)
+        queryset = queryset.filter(cursor__lte=through_cursor)
     if subject is not None:
         queryset = queryset.filter(
             subject_content_type=_content_type_for_model_label(subject.model),
@@ -151,6 +205,30 @@ def outbox_events_after(
         )
     elif model is not None:
         queryset = queryset.filter(subject_content_type=_content_type_for_model_label(_model_label(model)))
+    if limit is not None:
+        return queryset[:limit]
+    return queryset
+
+
+def outbox_events_pending_broadcast(
+    *,
+    using: str | None = None,
+    limit: int | None = None,
+) -> models.QuerySet:
+    """Return cursor-assigned rows after the listener's durable watermark."""
+
+    manager = ObjectStreamEvent.objects
+    if using is not None:
+        manager = manager.db_manager(using)
+    queryset = (
+        manager.select_related(
+            "subject_content_type",
+            "source_content_type",
+            "source_history_content_type",
+        )
+        .filter(cursor__gt=broadcasted_through_cursor(using=using))
+        .order_by("cursor")
+    )
     if limit is not None:
         return queryset[:limit]
     return queryset

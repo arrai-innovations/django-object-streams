@@ -23,6 +23,7 @@ def _content_type_model_label(content_type: ContentType) -> str:
 class ObjectStreamEvent(models.Model):
     """Outbox row that gives object streams a replayable global cursor."""
 
+    cursor = models.BigIntegerField(null=True, blank=True, unique=True)
     subject_content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, related_name="+")
     subject_object_id = models.TextField()
     source_content_type = models.ForeignKey(
@@ -50,13 +51,13 @@ class ObjectStreamEvent(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        ordering = ["id"]
+        ordering = ["cursor", "id"]
         indexes = [
             models.Index(
-                fields=["subject_content_type", "subject_object_id", "id"],
-                name="object_stre_subject_4c6a07_idx",
+                fields=["subject_content_type", "subject_object_id", "cursor"],
+                name="object_stre_subject_8d65d0_idx",
             ),
-            models.Index(fields=["facet", "id"], name="object_stre_facet_327c88_idx"),
+            models.Index(fields=["facet", "cursor"], name="object_stre_facet_407b73_idx"),
         ]
 
     def __str__(self):
@@ -77,7 +78,7 @@ class ObjectStreamEvent(models.Model):
             )
 
         return StreamEvent(
-            cursor=self.pk,
+            cursor=self.cursor,
             subject=ObjectRef(
                 model=_content_type_model_label(self.subject_content_type),
                 pk=self.subject_object_id,
@@ -102,6 +103,8 @@ class ObjectStreamOutboxState(models.Model):
 
     id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
     pruned_through = models.BigIntegerField(default=0)
+    next_cursor = models.BigIntegerField(default=1)
+    broadcasted_through = models.BigIntegerField(default=0)
 
     def __str__(self):
-        return f"pruned through {self.pruned_through}"
+        return f"broadcast through {self.broadcasted_through}, pruned through {self.pruned_through}"

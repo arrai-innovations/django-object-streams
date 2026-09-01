@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from collections.abc import Iterator
 
 from django.conf import settings
@@ -57,6 +58,7 @@ def listen_outbox_event_ids(
     channel: str | None = None,
     timeout: float | None = None,
     stop_after: int | None = None,
+    on_listening: Callable[[], bool] | None = None,
 ) -> Iterator[int]:
     """Yield outbox event ids from PostgreSQL notifications."""
 
@@ -74,6 +76,9 @@ def listen_outbox_event_ids(
     try:
         with connection.cursor() as cursor:
             cursor.execute(f"LISTEN {channel_name}")
+
+        if on_listening is not None and on_listening():
+            return
 
         for notification in notifies(timeout=timeout, stop_after=stop_after):
             if notification.channel != channel_name:

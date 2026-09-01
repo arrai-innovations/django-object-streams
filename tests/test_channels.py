@@ -213,7 +213,7 @@ def test_object_stream_consumer_delivers_outbox_event_json():
         assert await receive_json(communicator) == {
             "type": "event",
             "subscription_id": subscribed["subscription_id"],
-            "cursor": row.pk,
+            "cursor": row.cursor,
             "subject": {"model": "testapp.Note", "pk": str(note.pk)},
             "facet": "object",
             "op": "updated",
@@ -276,7 +276,7 @@ def test_redis_listener_command_delivers_producer_event_to_websocket():
                     f"Open {attempt}",
                     registry,
                 )
-                produced_cursors.update(row.pk for row in rows)
+                produced_cursors.update(row.cursor for row in rows)
                 payload = await maybe_receive_json(communicator, timeout=REDIS_POLL_TIMEOUT)
                 if payload is not None:
                     break
@@ -289,7 +289,8 @@ def test_redis_listener_command_delivers_producer_event_to_websocket():
             if result is not None:
                 raise result
         finally:
-            await disconnect(communicator)
+            if not communicator.future.done():
+                await disconnect(communicator)
 
         assert payload is not None
         assert payload["type"] == "event"
@@ -352,7 +353,7 @@ def test_broadcast_outbox_event_delivers_to_matching_consumers():
         assert await receive_json(filter_communicator) == {
             "type": "event",
             "subscription_id": filter_subscription["subscription_id"],
-            "cursor": row.pk,
+            "cursor": row.cursor,
             "subject": {"model": "testapp.Note", "pk": str(note.pk)},
             "facet": "object",
             "op": "updated",
@@ -363,7 +364,7 @@ def test_broadcast_outbox_event_delivers_to_matching_consumers():
         assert await receive_json(object_communicator) == {
             "type": "event",
             "subscription_id": object_subscription["subscription_id"],
-            "cursor": row.pk,
+            "cursor": row.cursor,
             "subject": {"model": "testapp.Note", "pk": str(note.pk)},
             "facet": "object",
             "op": "updated",
@@ -419,8 +420,8 @@ def test_consumer_deduplicates_events_from_overlapping_groups():
         object_event = await receive_json(communicator)
         assert model_event["subscription_id"] == model_subscription["subscription_id"]
         assert object_event["subscription_id"] == object_subscription["subscription_id"]
-        assert model_event["cursor"] == row.pk
-        assert object_event["cursor"] == row.pk
+        assert model_event["cursor"] == row.cursor
+        assert object_event["cursor"] == row.cursor
 
         await asyncio.sleep(0.05)
         assert communicator.output_queue.empty()
@@ -483,7 +484,7 @@ def test_unsubscribing_keeps_shared_group_until_last_subscription_leaves():
 
         event = await receive_json(communicator)
         assert event["subscription_id"] == remaining_subscription["subscription_id"]
-        assert event["cursor"] == row.pk
+        assert event["cursor"] == row.cursor
         await disconnect(communicator)
 
     async_to_sync(run_test)()
@@ -519,7 +520,7 @@ def test_object_stream_consumer_sends_collection_resync_json():
         assert await receive_json(communicator) == {
             "type": "resync_required",
             "subscription_id": subscribed["subscription_id"],
-            "cursor": row.pk,
+            "cursor": row.cursor,
             "reason": "cursor_replay_unavailable",
         }
         await disconnect(communicator)

@@ -4,18 +4,24 @@ from __future__ import annotations
 
 from time import sleep
 
+from asgiref.sync import async_to_sync
+from channels.db import database_sync_to_async
 from django.core.management.base import BaseCommand
 from django.core.management.base import CommandError
 from django.db import DEFAULT_DB_ALIAS
 from django.db import DatabaseError
 from django.db import connections
 
+from object_streams.outbox import assign_outbox_cursors
+from object_streams.outbox import outbox_events_pending_broadcast
+from object_streams.outbox import record_broadcasted_through
 from object_streams.postgres import get_notify_channel
 from object_streams.postgres import listen_outbox_event_ids
 from object_streams.transports.channels import broadcast_outbox_event_sync
 
 
 DEFAULT_RETRY_DELAY = 1.0
+BROADCAST_BATCH_SIZE = 1000
 
 
 class Command(BaseCommand):
@@ -120,17 +126,44 @@ class Command(BaseCommand):
         if verbosity >= 1:
             self.stdout.write(f"Listening for object stream events on database {database!r}, channel {channel!r}.")
 
-        for event_id in listen_outbox_event_ids(
+        def drain_after_listen() -> bool:
+            nonlocal received
+            count = self._drain_pending_on_worker(database=database, once=once, verbosity=verbosity)
+            received = received or count > 0
+            return once and received
+
+        for _event_id in listen_outbox_event_ids(
             using=database,
             channel=channel,
             timeout=timeout,
             stop_after=1 if once else None,
+            on_listening=drain_after_listen,
         ):
-            received = True
-            broadcast_outbox_event_sync(event_id)
-            if verbosity >= 1:
-                self.stdout.write(f"Broadcasted object stream event {event_id}.")
-            if once:
+            count = self._drain_pending_on_worker(database=database, once=once, verbosity=verbosity)
+            received = received or count > 0
+            if once and received:
                 break
 
         return received
+
+    def _drain_pending_on_worker(self, *, database: str, once: bool, verbosity: int) -> int:
+        drain = database_sync_to_async(self._drain_pending, thread_sensitive=False)
+        return async_to_sync(drain)(database=database, once=once, verbosity=verbosity)
+
+    def _drain_pending(self, *, database: str, once: bool, verbosity: int) -> int:
+        broadcasted = 0
+        limit = 1 if once else BROADCAST_BATCH_SIZE
+        while True:
+            assign_outbox_cursors(using=database, limit=limit)
+            rows = list(outbox_events_pending_broadcast(using=database, limit=limit))
+            if not rows:
+                return broadcasted
+
+            for row in rows:
+                broadcast_outbox_event_sync(row.pk)
+                record_broadcasted_through(row.cursor, using=database)
+                broadcasted += 1
+                if verbosity >= 1:
+                    self.stdout.write(f"Broadcasted object stream event {row.pk} at cursor {row.cursor}.")
+                if once:
+                    return broadcasted

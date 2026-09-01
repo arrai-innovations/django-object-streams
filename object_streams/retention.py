@@ -10,6 +10,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from object_streams.models import ObjectStreamEvent
+from object_streams.outbox import broadcasted_through_cursor
 from object_streams.outbox import record_pruned_through
 
 
@@ -61,14 +62,14 @@ def _manager(using: str | None):
 
 
 def _age_prune_through(manager, before: datetime) -> int | None:
-    return manager.filter(created_at__lt=before).order_by("-id").values_list("id", flat=True).first()
+    return manager.filter(created_at__lt=before).order_by("-cursor").values_list("cursor", flat=True).first()
 
 
 def _row_limit_prune_through(manager, max_rows: int) -> int | None:
     if max_rows < 1:
         msg = "Retention row limits must be a positive integer."
         raise ValueError(msg)
-    oldest_kept = list(manager.order_by("-id").values_list("id", flat=True)[max_rows - 1 : max_rows])
+    oldest_kept = list(manager.order_by("-cursor").values_list("cursor", flat=True)[max_rows - 1 : max_rows])
     if not oldest_kept:
         return None
     return oldest_kept[0] - 1
@@ -90,9 +91,12 @@ def prune_outbox(
 
     if before is None and max_rows is None:
         return 0
+    if max_rows is not None and max_rows < 1:
+        msg = "Retention row limits must be a positive integer."
+        raise ValueError(msg)
 
-    manager = _manager(using)
-    newest = manager.order_by("-id").values_list("id", flat=True).first()
+    manager = _manager(using).filter(cursor__isnull=False)
+    newest = manager.order_by("-cursor").values_list("cursor", flat=True).first()
     if newest is None:
         return 0
 
@@ -106,11 +110,11 @@ def prune_outbox(
     if not retained:
         return 0
 
-    prune_through = min(max(retained), newest - 1)
+    prune_through = min(max(retained), newest - 1, broadcasted_through_cursor(using=using))
     if prune_through < 1:
         return 0
 
-    queryset = manager.filter(id__lte=prune_through)
+    queryset = manager.filter(cursor__lte=prune_through)
     if dry_run:
         return queryset.count()
 
