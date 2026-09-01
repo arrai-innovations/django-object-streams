@@ -177,11 +177,13 @@ class ObjectStreamConsumer(AsyncJsonWebsocketConsumer):
         await self.session.publish(row)
 
     async def send_subscribed(self, subscription: SubscriptionRequest) -> None:
-        await self._add_subscription_groups(subscription)
         payload = subscription.as_dict()
         payload.pop("op", None)
         payload["type"] = "subscribed"
         await self.send_json(payload)
+
+    async def prepare_subscription(self, subscription: SubscriptionRequest) -> None:
+        await self._add_subscription_groups(subscription)
 
     async def send_unsubscribed(self, subscription_id: str) -> None:
         await self._discard_subscription_groups(subscription_id)

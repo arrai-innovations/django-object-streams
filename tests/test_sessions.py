@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import django_filters
 import pytest
+from channels.db import database_sync_to_async
 
 from object_streams.events import EventOperation
 from object_streams.events import ListAction
@@ -43,6 +44,15 @@ class RecordingTransport:
                 "details": details,
             }
         )
+
+
+class OnSubscribeTransport(RecordingTransport):
+    def __init__(self, callback):
+        super().__init__()
+        self.callback = callback
+
+    async def prepare_subscription(self, subscription):
+        await database_sync_to_async(self.callback)()
 
 
 class NoteFilter(django_filters.FilterSet):
@@ -332,6 +342,44 @@ def test_session_does_not_deliver_events_outside_visibility():
         str(hidden.pk),
         str(visible.pk),
     ]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_filter_subscription_resyncs_an_event_captured_while_the_transport_joins():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    note = Note.objects.create(title="Closed")
+    rows = []
+
+    def capture_during_subscribe():
+        note.title = "Open"
+        note.save(update_fields=["title"])
+        rows.append(
+            create_outbox_event(
+                StreamEvent(
+                    subject=ObjectRef.from_instance(note),
+                    op=EventOperation.UPDATED,
+                    changed_fields=("title",),
+                )
+            )
+        )
+
+    transport = OnSubscribeTransport(capture_during_subscribe)
+    session = SubscriptionSession(user=None, transport=transport, registry=registry)
+
+    subscription = session.subscribe(
+        {
+            "op": "subscribe",
+            "kind": "filter",
+            "model": "testapp.Note",
+            "filter": {"title": "Open"},
+        }
+    )
+
+    assert subscription.cursor == 0
+    assert transport.resyncs[0].cursor == rows[0].cursor
+    assert session.subscriptions[0].member_pks == {str(note.pk)}
+    assert session.publish(rows[0]) == []
 
 
 @pytest.mark.django_db

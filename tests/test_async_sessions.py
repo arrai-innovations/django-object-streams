@@ -1,6 +1,7 @@
 import django_filters
 import pytest
 from asgiref.sync import async_to_sync
+from channels.db import database_sync_to_async
 
 from object_streams.events import EventOperation
 from object_streams.events import ListAction
@@ -42,6 +43,15 @@ class RecordingTransport:
                 "details": details,
             }
         )
+
+
+class OnSubscribeTransport(RecordingTransport):
+    def __init__(self, callback):
+        super().__init__()
+        self.callback = callback
+
+    async def prepare_subscription(self, subscription):
+        await database_sync_to_async(self.callback)()
 
 
 class NoteFilter(django_filters.FilterSet):
@@ -128,6 +138,43 @@ def test_async_session_publishes_subscription_relative_events():
         str(excluded.pk),
         str(included_pk),
     ]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_async_object_subscription_replays_an_event_captured_while_the_transport_joins():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    note = Note.objects.create(title="Open")
+    rows = []
+
+    def capture_during_subscribe():
+        note.title = "Revised"
+        note.save(update_fields=["title"])
+        rows.append(
+            create_outbox_event(
+                StreamEvent(
+                    subject=ObjectRef.from_instance(note),
+                    op=EventOperation.UPDATED,
+                    changed_fields=("title",),
+                )
+            )
+        )
+
+    transport = OnSubscribeTransport(capture_during_subscribe)
+    session = AsyncSubscriptionSession(user=None, transport=transport, registry=registry)
+
+    subscription = async_to_sync(session.subscribe)(
+        {
+            "op": "subscribe",
+            "kind": "object",
+            "model": "testapp.Note",
+            "pk": note.pk,
+        }
+    )
+
+    assert subscription.cursor == 0
+    assert [event.cursor for event in transport.events] == [rows[0].cursor]
+    assert async_to_sync(session.publish)(rows[0]) == []
 
 
 @pytest.mark.django_db(transaction=True)

@@ -14,6 +14,9 @@ __all__ = ("Transport",)
 
 
 class Transport(Protocol):
+    async def prepare_subscription(self, subscription: SubscriptionRequest) -> None:
+        """Prepare transport routing before the subscription is acknowledged."""
+
     async def send_subscribed(self, subscription: SubscriptionRequest) -> None:
         """Send a subscription acknowledgement."""
 

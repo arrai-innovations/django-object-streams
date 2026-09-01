@@ -42,6 +42,7 @@ class ActiveSubscription:
     request: SubscriptionRequest
     registration: ObjectStreamRegistration
     member_pks: set[str]
+    through_cursor: int
 
     @property
     def subscription_id(self) -> str:
@@ -177,6 +178,40 @@ class _BaseSubscriptionSession:
             )
         return tuple(events)
 
+    def _subscription_catch_up(
+        self,
+        active: ActiveSubscription,
+        snapshot_cursor: int,
+    ) -> tuple[StreamEvent | ResyncRequired, ...]:
+        through_cursor = latest_outbox_cursor()
+        if through_cursor == snapshot_cursor:
+            return ()
+
+        messages: tuple[StreamEvent | ResyncRequired, ...] = ()
+        if active.request.kind == SubscriptionKind.OBJECT:
+            replay_events = self._object_replay_events(active, snapshot_cursor, through_cursor)
+            if replay_events is None:
+                messages = (
+                    ResyncRequired(
+                        subscription_id=active.subscription_id,
+                        cursor=through_cursor,
+                        reason="object_replay_limit_exceeded",
+                    ),
+                )
+            else:
+                messages = replay_events
+        elif self._has_collection_replay_events(active, snapshot_cursor, through_cursor):
+            messages = (
+                ResyncRequired(
+                    subscription_id=active.subscription_id,
+                    cursor=through_cursor,
+                ),
+            )
+
+        active.member_pks = self._current_member_pks(active.registration, active.request)
+        active.through_cursor = through_cursor
+        return messages
+
 
 class SubscriptionSession(_BaseSubscriptionSession):
     """Coordinate subscriptions and event delivery for one connection."""
@@ -233,10 +268,14 @@ class SubscriptionSession(_BaseSubscriptionSession):
             request=acknowledged,
             registration=registration,
             member_pks=member_pks,
+            through_cursor=snapshot_cursor,
         )
         self._subscriptions[subscription_id] = active
+        self._prepare_subscription(acknowledged)
+        catch_up_messages = self._subscription_catch_up(active, snapshot_cursor)
         self._send_subscribed(acknowledged)
         self._replay_requested_cursor(active, requested.cursor, through_cursor=snapshot_cursor)
+        self._send_catch_up_messages(catch_up_messages)
         return acknowledged
 
     def unsubscribe(self, subscription_id: str) -> bool:
@@ -256,7 +295,11 @@ class SubscriptionSession(_BaseSubscriptionSession):
         event = event_or_row.to_stream_event() if isinstance(event_or_row, ObjectStreamEvent) else event_or_row
         delivered = []
         for active in tuple(self._subscriptions.values()):
+            if event.cursor is not None and event.cursor <= active.through_cursor:
+                continue
             subscription_event = self.evaluate(active, event)
+            if event.cursor is not None:
+                active.through_cursor = event.cursor
             if subscription_event is None:
                 continue
             self._send_event(subscription_event)
@@ -320,6 +363,13 @@ class SubscriptionSession(_BaseSubscriptionSession):
                 )
             )
 
+    def _send_catch_up_messages(self, messages: tuple[StreamEvent | ResyncRequired, ...]) -> None:
+        for message in messages:
+            if isinstance(message, ResyncRequired):
+                self._send_resync(message)
+            else:
+                self._send_event(message)
+
     def _replay_object_subscription(
         self,
         active: ActiveSubscription,
@@ -343,6 +393,11 @@ class SubscriptionSession(_BaseSubscriptionSession):
 
     def _send_subscribed(self, subscription: SubscriptionRequest) -> None:
         async_to_sync(self.transport.send_subscribed)(subscription)
+
+    def _prepare_subscription(self, subscription: SubscriptionRequest) -> None:
+        prepare = getattr(self.transport, "prepare_subscription", None)
+        if prepare is not None:
+            async_to_sync(prepare)(subscription)
 
     def _send_unsubscribed(self, subscription_id: str) -> None:
         async_to_sync(self.transport.send_unsubscribed)(subscription_id)
@@ -412,10 +467,14 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
             request=acknowledged,
             registration=registration,
             member_pks=member_pks,
+            through_cursor=snapshot_cursor,
         )
         self._subscriptions[subscription_id] = active
+        await self._prepare_subscription(acknowledged)
+        catch_up_messages = await database_sync_to_async(self._subscription_catch_up)(active, snapshot_cursor)
         await self.transport.send_subscribed(acknowledged)
         await self._replay_requested_cursor(active, requested.cursor, through_cursor=snapshot_cursor)
+        await self._send_catch_up_messages(catch_up_messages)
         return acknowledged
 
     async def unsubscribe(self, subscription_id: str) -> bool:
@@ -439,7 +498,11 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
 
         delivered = []
         for active in tuple(self._subscriptions.values()):
+            if event.cursor is not None and event.cursor <= active.through_cursor:
+                continue
             subscription_event = await self.evaluate(active, event)
+            if event.cursor is not None:
+                active.through_cursor = event.cursor
             if subscription_event is None:
                 continue
             await self.transport.send_event(subscription_event)
@@ -507,6 +570,18 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
                     cursor=through_cursor,
                 )
             )
+
+    async def _prepare_subscription(self, subscription: SubscriptionRequest) -> None:
+        prepare = getattr(self.transport, "prepare_subscription", None)
+        if prepare is not None:
+            await prepare(subscription)
+
+    async def _send_catch_up_messages(self, messages: tuple[StreamEvent | ResyncRequired, ...]) -> None:
+        for message in messages:
+            if isinstance(message, ResyncRequired):
+                await self.transport.send_resync(message)
+            else:
+                await self.transport.send_event(message)
 
     async def _replay_object_subscription(
         self,
