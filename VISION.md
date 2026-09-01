@@ -109,7 +109,7 @@ The likely shape:
 database transaction commits
 outbox row is created
 NOTIFY sends the outbox id
-listener loads the outbox row
+listener assigns a commit-visible delivery cursor
 listener fans out through the transport adapter
 consumer sends subscription-relative notifications
 ```
@@ -192,8 +192,9 @@ permissions changed because a state permission or group membership changed
 
 ### Cursor
 
-The cursor is a global monotonic outbox id. It is not a timestamp and not a
-per-model history id.
+The cursor is a global monotonic delivery sequence assigned after the capture
+transaction is visible. It is not the pre-commit outbox row id, a timestamp, or
+a per-model history id.
 
 The cursor supports:
 
@@ -549,8 +550,9 @@ workflow_object_streams.register_resource(CustomerOrderResource)
    workflow-managed subject object.
 5. Lightweight notifications plus REST refetch should be the default. Diffs can
    be an optional optimization later.
-6. A global outbox cursor is the cleanest recovery primitive. Datetimes and
-   per-model history ids are weaker cursors.
+6. A global commit-visible delivery cursor is the cleanest recovery primitive.
+   Pre-commit sequence ids, datetimes, and per-model history ids are weaker
+   cursors.
 7. PostgreSQL is the database target because the outbox, wakeup, and future
    producer features are expected to rely on PostgreSQL behavior directly.
 

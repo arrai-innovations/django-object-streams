@@ -64,7 +64,8 @@ python manage.py migrate object_streams
 - Subject: the user-visible object subscribers care about.
 - Source: the row, event, or history record that caused the stream event.
 - Facet: the part of a subject that changed, such as `object`, `workflow_state`, `permissions`, or `related`.
-- Cursor: the global outbox id used for reconnect and replay.
+- Cursor: the global commit-visible delivery sequence used for reconnect and
+  replay. It is separate from the outbox row id used by internal wakeups.
 - Visibility policy: the permission-scoped queryset for a user and model.
 - Subscription: an object, filtered queryset, or model-level watch.
 
@@ -114,6 +115,11 @@ enqueue_source_events(
 
 For scripts, tests, or jobs that need the outbox row immediately, use
 `create_source_events(...)` instead.
+
+Capture and delivery are separate. A row created inside an open transaction has
+no public cursor until that transaction commits and the listener can observe it.
+This prevents concurrent transactions that commit in a different order from
+creating gaps a reconnecting client could skip.
 
 Outbox writes send a PostgreSQL notification with the committed outbox id by
 default. Pass `notify=False` to `create_source_events(...)`,
@@ -412,8 +418,8 @@ The path from a write to a client is:
 
 ```text
 application transaction commits
-outbox row is created and NOTIFY sends its id
-listener receives the id and loads the row
+outbox row is created and NOTIFY sends its internal id
+listener assigns a commit-visible delivery cursor
 listener fans the row out to Channels groups
 each ASGI worker evaluates the row against its own subscriptions
 consumer sends subscription-relative messages
@@ -422,6 +428,11 @@ consumer sends subscription-relative messages
 Subscription state is connection-local. Every worker evaluates visibility and
 filter membership for its own connections, so no permission decision is shared
 between processes. Only outbox ids cross the channel layer.
+
+Run one active listener for each database and notification channel. The durable
+watermark makes a restarted listener safe, but concurrent listeners are not a
+supported high-availability topology because they can fan out cursors out of
+order.
 
 ### ASGI routing
 
@@ -488,8 +499,11 @@ python manage.py object_streams_listen
 | `--max-retries` | Maximum reconnect attempts. Defaults to retrying forever. |
 
 The listener retries database errors by default, so a PostgreSQL restart does
-not need a supervisor restart. Use `--once --timeout <seconds>` for smoke tests
-or supervisor health checks.
+not need a supervisor restart. After it starts listening, and after every
+reconnect, it drains committed rows whose successful fanout was not recorded.
+PostgreSQL notifications are therefore wakeups rather than the durable delivery
+ledger. Use `--once --timeout <seconds>` for smoke tests or supervisor health
+checks.
 
 ### Settings
 
@@ -526,6 +540,8 @@ client disconnect you want to replay rather than resync.
 
 Two properties keep pruning safe:
 
+- Pruning does not delete captured rows until the listener has recorded their
+  successful channel-layer fanout.
 - Pruning never deletes the newest retained row. The global cursor never moves
   backwards, so a returning client never sees `invalid_cursor` for a cursor it
   legitimately holds.

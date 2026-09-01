@@ -18,7 +18,8 @@ remaining decisions have been implemented, rejected, or moved here.
 - [x] Done: visibility policies for permission-scoped querysets.
 - [x] Done: source adapters with separate subject and source references.
 - [x] Done: facets for classifying the part of a subject that changed.
-- [x] Done: durable PostgreSQL outbox rows with global cursors.
+- [x] Done: durable PostgreSQL outbox rows with commit-visible global delivery
+  cursors, separate from capture row ids.
 - [x] Done: producer helpers for immediate and transaction-on-commit writes.
 - [x] Done: PostgreSQL `LISTEN/NOTIFY` wakeups for committed outbox ids.
 - [x] Done: connection-local sync and async subscription runtimes.
@@ -82,6 +83,8 @@ remaining decisions have been implemented, rejected, or moved here.
 
 - [x] Done: listener management command.
 - [x] Done: listener reconnect behavior for database errors.
+- [x] Done: listener startup and reconnect drain for committed rows whose
+  channel-layer fanout was not durably recorded.
 - [x] Done: bounded listener mode for smoke tests and health checks.
 - [x] Done: deployment notes for Redis or another process-shared Channels
   layer.
@@ -110,6 +113,10 @@ remaining decisions have been implemented, rejected, or moved here.
   coverage.
 - [x] Done: trigger capture coverage for inserts, updates, deletes, bulk writes,
   rollback, notification, and transaction grouping.
+- [x] Done: concurrent reverse-commit coverage proving that delivery cursor order
+  does not depend on pre-commit sequence allocation.
+- [x] Done: subscription handshake catch-up coverage for events committed while
+  transport routing is being prepared.
 - [ ] Later: add compatibility tests for non-integer primary keys.
 
 ## External Boundaries
@@ -119,4 +126,3 @@ remaining decisions have been implemented, rejected, or moved here.
 - [ ] External: application-specific visibility policies belong in the
   application or downstream integration package.
 - [ ] External: workflow state mappings belong in a downstream source adapter.
-
