@@ -169,6 +169,9 @@ class OrderStream(ThirdPartyOrder):
         triggers = [ObjectStreamTrigger(name="order_stream")]
 ```
 
+Events captured through a proxy use the concrete model's label, so they match a
+registration for ``ThirdPartyOrder`` rather than the proxy itself.
+
 Run `makemigrations` and `migrate` afterwards. A declared trigger that was never
 migrated is not installed, and capture silently does nothing.
 

@@ -64,7 +64,7 @@ _FUNC = """
 
     SELECT id INTO subject_type
     FROM django_content_type
-    WHERE app_label = '{meta.app_label}' AND model = '{meta.model_name}';
+    WHERE app_label = '{subject_meta.app_label}' AND model = '{subject_meta.model_name}';
 
     IF subject_type IS NULL THEN
         RETURN NULL;
@@ -95,9 +95,9 @@ _FUNC = """
         created_at
     ) VALUES (
         subject_type,
-        subject_row ->> '{meta.pk.column}',
+        subject_row ->> '{subject_meta.pk.column}',
         subject_type,
-        subject_row ->> '{meta.pk.column}',
+        subject_row ->> '{subject_meta.pk.column}',
         NULL,
         '',
         __FACET__,
@@ -160,9 +160,15 @@ class ObjectStreamTrigger(pgtrigger.Trigger):
         super().__init__(**kwargs)
 
     def _sql(self) -> str:
-        """Return the trigger body, leaving pgtrigger's own ``{meta.*}`` intact."""
+        """Return the trigger body, leaving its model placeholders intact."""
         return (
             _FUNC.replace("__FACET__", _quote(self.facet))
             .replace("__CHANNEL_SETTING__", NOTIFY_CHANNEL_SETTING)
             .replace("__DEFAULT_CHANNEL__", _quote(self.channel or DEFAULT_NOTIFY_CHANNEL))
         )
+
+    def get_func_template_kwargs(self, model):
+        """Render outbox references with the concrete model's identity."""
+        kwargs = super().get_func_template_kwargs(model)
+        kwargs["subject_meta"] = model._meta.concrete_model._meta
+        return kwargs

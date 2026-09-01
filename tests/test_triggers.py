@@ -3,6 +3,9 @@ from django.db import connection
 from django.db import transaction
 
 from object_streams.models import ObjectStreamEvent
+from object_streams.registry import ObjectStreamRegistry
+from tests.testapp.models import ProxyTriggeredNote
+from tests.testapp.models import ProxyTriggerTarget
 from tests.testapp.models import TriggeredNote
 
 
@@ -156,6 +159,29 @@ def test_the_trigger_is_installed_for_the_declared_model():
         names = [name for (name,) in cursor.fetchall()]
 
     assert any("triggered_note_stream" in name for name in names), names
+
+
+@pytest.mark.django_db
+def test_a_trigger_declared_on_a_proxy_emits_the_concrete_model():
+    registry = ObjectStreamRegistry()
+    registration = registry.register(ProxyTriggerTarget)
+
+    note = ProxyTriggerTarget.objects.create(title="Open")
+
+    row = ObjectStreamEvent.objects.get(subject_object_id=str(note.pk))
+    event = row.to_stream_event()
+    assert event.subject.model == registration.model_label
+    assert row.subject_content_type.model_class() is ProxyTriggerTarget
+    assert event.source.model == registration.model_label
+
+
+def test_a_proxy_trigger_compiles_with_the_concrete_model_identity():
+    from object_streams.triggers import ObjectStreamTrigger
+
+    compiled = ObjectStreamTrigger(name="proxy_probe").compile(ProxyTriggeredNote)
+
+    assert "app_label = 'testapp' AND model = 'proxytriggertarget'" in compiled.sql
+    assert "model = 'proxytriggerednote'" not in compiled.sql
 
 
 def test_a_changed_facet_changes_the_compiled_trigger():
