@@ -37,6 +37,7 @@ migrated is not installed, and capture silently does nothing.
 from __future__ import annotations
 
 import pgtrigger
+from django.db import models
 
 from object_streams.postgres import DEFAULT_NOTIFY_CHANNEL
 from object_streams.postgres import validate_notify_channel
@@ -138,7 +139,8 @@ class ObjectStreamTrigger(pgtrigger.Trigger):
     ``update_fields``, which the signal-based producers cannot do.
 
     Every row carries the Postgres transaction id in ``metadata``, so a client can
-    tell that several events came from one logical change.
+    tell that several events came from the same database transaction. It is not an
+    application action identifier because one action may span several transactions.
     """
 
     def __init__(self, *, facet: str = "object", channel: str | None = None, **kwargs):
@@ -170,5 +172,9 @@ class ObjectStreamTrigger(pgtrigger.Trigger):
     def get_func_template_kwargs(self, model):
         """Render outbox references with the concrete model's identity."""
         kwargs = super().get_func_template_kwargs(model)
-        kwargs["subject_meta"] = model._meta.concrete_model._meta
+        subject_meta = model._meta.concrete_model._meta
+        if isinstance(subject_meta.pk, models.CompositePrimaryKey):
+            msg = f"ObjectStreamTrigger does not support composite primary keys ({subject_meta.label})."
+            raise ValueError(msg)
+        kwargs["subject_meta"] = subject_meta
         return kwargs

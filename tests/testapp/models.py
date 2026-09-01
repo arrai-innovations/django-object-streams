@@ -29,3 +29,21 @@ class ProxyTriggeredNote(ProxyTriggerTarget):
     class Meta:
         proxy = True
         triggers = [ObjectStreamTrigger(name="proxy_triggered_note_stream")]
+
+
+class CompositeTriggerTarget(models.Model):
+    """Unmanaged model used to exercise unsupported trigger compilation."""
+
+    tenant_id = models.IntegerField()
+    object_id = models.IntegerField()
+    pk = models.CompositePrimaryKey("tenant_id", "object_id")
+
+    class Meta:
+        managed = False
+
+
+class ProxyCompositeTriggerTarget(CompositeTriggerTarget):
+    """Proxy coverage for concrete composite-key validation."""
+
+    class Meta:
+        proxy = True

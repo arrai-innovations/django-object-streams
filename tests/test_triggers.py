@@ -4,6 +4,8 @@ from django.db import transaction
 
 from object_streams.models import ObjectStreamEvent
 from object_streams.registry import ObjectStreamRegistry
+from tests.testapp.models import CompositeTriggerTarget
+from tests.testapp.models import ProxyCompositeTriggerTarget
 from tests.testapp.models import ProxyTriggeredNote
 from tests.testapp.models import ProxyTriggerTarget
 from tests.testapp.models import TriggeredNote
@@ -182,6 +184,17 @@ def test_a_proxy_trigger_compiles_with_the_concrete_model_identity():
 
     assert "app_label = 'testapp' AND model = 'proxytriggertarget'" in compiled.sql
     assert "model = 'proxytriggerednote'" not in compiled.sql
+
+
+@pytest.mark.parametrize("model", [CompositeTriggerTarget, ProxyCompositeTriggerTarget])
+def test_a_trigger_rejects_a_composite_primary_key(model):
+    from object_streams.triggers import ObjectStreamTrigger
+
+    with pytest.raises(
+        ValueError,
+        match=r"does not support composite primary keys \(testapp.CompositeTriggerTarget\)",
+    ):
+        ObjectStreamTrigger(name="composite_probe").compile(model)
 
 
 def test_a_changed_facet_changes_the_compiled_trigger():

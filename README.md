@@ -181,9 +181,9 @@ Every captured row records the Postgres transaction id in `metadata`:
 {"transaction_id": "3208276"}
 ```
 
-Events written by one transaction share it, so a client that receives several
-events from one logical change can coalesce them into a single refetch instead of
-one per row.
+Events written by one database transaction share it, so a client can coalesce
+them into a single refetch instead of one per row. This is not an application
+action identifier: one request or audit context may span several transactions.
 
 The trigger sends its own `pg_notify`, which is transactional: the notification
 arrives when the transaction commits and is discarded when it rolls back. It
@@ -196,7 +196,7 @@ ALTER DATABASE mydb SET object_streams.notify_channel = 'my_channel';
 Without that setting the trigger uses `object_streams_events`, the same default
 as `OBJECT_STREAMS_NOTIFY_CHANNEL`. Set both when you override either.
 
-Two limits are worth knowing:
+Three limits are worth knowing:
 
 - The captured row is its own subject, which suits models whose own writes are
   what subscribers care about. A source whose subject is a different object, such
@@ -204,6 +204,8 @@ Two limits are worth knowing:
   mapping written as SQL or left to a Python producer.
 - `changed_fields` reports database column names, so a foreign key appears as
   `supplier_id` rather than `supplier`.
+- Composite primary keys are not supported. Trigger compilation raises a focused
+  error instead of generating a subject id that cannot represent the key.
 
 Producers and triggers can coexist, but not on the same table: a table with a
 capture trigger should not also have producers called against it, or each write
