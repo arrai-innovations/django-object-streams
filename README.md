@@ -1,6 +1,6 @@
 # Django Object Streams
 
-![pytest status][] [![coverage status][]][coverage] ![ruff status][] ![pysentry status][]
+[![pypi][]][pypi package] ![pytest status][] [![coverage status][]][coverage] ![ruff status][] ![pysentry status][]
 
 `django-object-streams` is a Django library for lightweight, permission-aware, filter-aware subscriptions to model objects and querysets.
 
@@ -670,6 +670,8 @@ BSD 3-Clause. See [LICENSE](LICENSE).
 
 [coverage]: https://docs.arrai.dev/django-object-streams/artifacts/main/htmlcov_pytest/
 [coverage status]: https://docs.arrai.dev/django-object-streams/artifacts/main/coverage.svg
+[pypi]: https://img.shields.io/pypi/v/django-object-streams?style=for-the-badge
+[pypi package]: https://pypi.org/project/django-object-streams/
 [pysentry status]: https://docs.arrai.dev/django-object-streams/artifacts/main/pysentry.svg
 [pytest status]: https://docs.arrai.dev/django-object-streams/artifacts/main/pytest.svg
 [ruff status]: https://docs.arrai.dev/django-object-streams/artifacts/main/ruff.svg
