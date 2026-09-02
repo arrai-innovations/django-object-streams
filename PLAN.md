@@ -2,8 +2,8 @@
 
 `PLAN.md` tracks durable implementation status and follow-up work for the
 library. `README.md` should stay public-facing and describe current supported
-behavior. `VISION.md` is temporary design context and should be removed once the
-remaining decisions have been implemented, rejected, or moved here.
+behavior. The original `VISION.md` design context has been implemented,
+rejected, or moved here, and was removed.
 
 ## Status Legend
 
@@ -59,14 +59,34 @@ remaining decisions have been implemented, rejected, or moved here.
   visibility.
 - [x] Done: object and model subscriptions use visibility only.
 - [ ] Later: define search subscription support beyond the current
-  `unsupported_search` response.
-- [ ] Later: add ordering change hints for subscribed collections.
+  `unsupported_search` response. Search is a membership filter, but it is often
+  fuzzy, database-specific, or backed by an external index. A search adapter
+  would have to declare whether it can evaluate membership before and after a
+  change. Where it cannot, search subscriptions fall back to `resync_required`
+  more often than filter subscriptions do.
+- [ ] Later: add ordering change hints for subscribed collections. Ordering is
+  not membership, so an object whose ordering field changed is still `changed`.
+  The candidate shape is an `ordering_changed` boolean alongside
+  `changed_fields`, so a client can recompute list placement or refetch the
+  affected page rather than guess from `changed_fields` alone.
 - [ ] Next: surface the capture transaction id on `StreamEvent` and document how a
   client coalesces the events of one transaction.
 - [ ] Later: decide whether shape parameters remain transport hints or become a
-  payload adapter contract.
+  payload adapter contract. Subscription parameters divide into four kinds:
+  membership (`filter`, `search`) decides what belongs in the set, shape
+  (`fields`, `omit`, `expand`) decides optional payload, ordering decides
+  placement, and window decides which slice is watched. Only membership may
+  affect whether an event is delivered. Open question: when only omitted fields
+  changed, a server could set `fetch` to false, but that is an optimization
+  rather than the initial correctness model.
 - [ ] Later: document that exact live numbered pagination is not a core
-  guarantee unless a future window adapter proves otherwise.
+  guarantee unless a future window adapter proves otherwise. Numbered pages
+  describe a window at one point in time, and inserts, deletes, and ordering
+  changes shift objects across page boundaries without any changed field on the
+  shifted objects. The recommended policy is collection invalidation plus a REST
+  refetch of the canonical page. A cursor or limit window adapter could later
+  send `resync_required` whenever membership or ordering changes before the
+  watched window.
 
 ## Source And History
 
