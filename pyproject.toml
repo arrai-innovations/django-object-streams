@@ -13,7 +13,6 @@ authors = [
     { name = "Arrai Innovations", email = "support@arrai.com" },
 ]
 classifiers = [
-    "Database Environment :: PostgreSQL",
     "Development Status :: 2 - Pre-Alpha",
     "Environment :: Web Environment",
     "Framework :: Django",
@@ -25,6 +24,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
 ]
 dynamic = ["version"]
 dependencies = [
