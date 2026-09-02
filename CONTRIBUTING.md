@@ -63,3 +63,35 @@ Avoid titles such as `fix: server changes` or `chore: updates`.
 Commit messages use the same Conventional Commit format, allowed types, and
 scope guidance as pull request titles. Commitlint can be used locally to
 validate commit messages.
+
+## Changelog
+
+[CHANGELOG.md](CHANGELOG.md) follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Add the entry in the same pull request as the change, under `## [Unreleased]`.
+
+Write entries for the reader upgrading the package, not for the reviewer reading
+the diff. Describe the behavior that changed and, for anything breaking, what to
+do about it. An entry does not need to match the commit subject.
+
+Only user-visible changes earn an entry. Map the commit type to a section:
+
+| Type | Section |
+|---|---|
+| `feat` | `### Added`, or `### Changed` when it alters existing behavior |
+| `fix` | `### Fixed`, or `### Security` for a vulnerability |
+| `perf` | `### Changed` |
+| `remove` | `### Removed`, after a release that listed it under `### Deprecated` |
+| `revert` | The section the reverted change used |
+| `build`, `ci`, `chore`, `docs`, `refactor`, `style`, `test`, `wip` | None, unless the change is visible to someone using the package |
+
+Include only the sections that have entries. Do not add empty headings.
+
+Use `### Deprecated` to announce something that still works but will be removed,
+and keep it listed until the release that removes it.
+
+### Releasing
+
+At release, rename `## [Unreleased]` to the version and date, such as
+`## [0.1.0a0] - 2026-09-01`, then open a fresh empty `## [Unreleased]` above it.
+Update the link definitions at the bottom of the file so the new version points
+at its tag and `unreleased` compares that tag against `main`.

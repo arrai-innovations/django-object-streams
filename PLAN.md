@@ -51,6 +51,8 @@ rejected, or moved here, and was removed.
   middleware, and the default visibility policy.
 - [x] Done: install docs assume PyPI and orient a reader to the registration,
   capture, routing, and listener steps a working install needs.
+- [x] Done: `CHANGELOG.md` in Keep a Changelog format, with entry conventions
+  and the release step documented in `CONTRIBUTING.md`.
 - [ ] Next: publish the first pre-alpha to PyPI. The install docs already
   describe the published package, so the README is only correct once the
   release tag has been built and uploaded.
