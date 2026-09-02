@@ -575,3 +575,202 @@ def test_filter_replay_resyncs_when_the_cursor_was_pruned():
     )
 
     assert session.transport.resyncs[0].reason == "cursor_pruned"
+
+
+@pytest.mark.django_db
+def test_search_subscriptions_are_rejected_as_unsupported():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    session = make_session(registry)
+
+    subscription = session.subscribe(
+        {
+            "op": "subscribe",
+            "kind": "filter",
+            "model": "testapp.Note",
+            "search": "Open",
+        }
+    )
+
+    assert subscription is None
+    assert session.subscriptions == ()
+    assert session.transport.subscribed == []
+    assert session.transport.errors == [
+        {
+            "code": "unsupported_search",
+            "message": "Search subscriptions are not supported yet.",
+            "details": None,
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_subscription_cursor_newer_than_the_outbox_is_rejected():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    note = Note.objects.create(title="Open")
+    row = create_outbox_event(
+        StreamEvent(
+            subject=ObjectRef.from_instance(note),
+            op=EventOperation.UPDATED,
+        )
+    )
+    session = make_session(registry)
+
+    subscription = session.subscribe(
+        {
+            "op": "subscribe",
+            "kind": "filter",
+            "model": "testapp.Note",
+            "filter": {"title": "Open"},
+            "cursor": row.cursor + 1,
+        }
+    )
+
+    assert subscription is None
+    assert session.subscriptions == ()
+    assert session.transport.subscribed == []
+    assert session.transport.errors == [
+        {
+            "code": "invalid_cursor",
+            "message": "Subscription cursor is newer than the outbox.",
+            "details": None,
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_object_subscription_for_a_missing_object_is_not_found():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    note = Note.objects.create(title="Open")
+    missing_pk = note.pk
+    note.delete()
+    session = make_session(registry)
+
+    subscription = session.subscribe(
+        {
+            "op": "subscribe",
+            "kind": "object",
+            "model": "testapp.Note",
+            "pk": missing_pk,
+        }
+    )
+
+    assert subscription is None
+    assert session.subscriptions == ()
+    assert session.transport.subscribed == []
+    assert session.transport.errors == [
+        {
+            "code": "not_found",
+            "message": "Object does not exist or is not visible.",
+            "details": None,
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_object_replay_resyncs_when_the_replay_limit_is_exceeded():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    note = Note.objects.create(title="Open")
+    rows = [
+        create_outbox_event(
+            StreamEvent(
+                subject=ObjectRef.from_instance(note),
+                op=EventOperation.UPDATED,
+                changed_fields=("title",),
+            )
+        )
+        for _ in range(3)
+    ]
+    session = SubscriptionSession(
+        user=None,
+        transport=RecordingTransport(),
+        registry=registry,
+        replay_limit=2,
+    )
+
+    subscription = session.subscribe(
+        {
+            "op": "subscribe",
+            "kind": "object",
+            "model": "testapp.Note",
+            "pk": note.pk,
+            "cursor": 0,
+        }
+    )
+
+    assert subscription.cursor == rows[-1].cursor
+    assert session.transport.events == []
+    assert session.transport.resyncs[0].as_dict() == {
+        "type": "resync_required",
+        "subscription_id": "sub_1",
+        "cursor": rows[-1].cursor,
+        "reason": "object_replay_limit_exceeded",
+    }
+
+
+@pytest.mark.django_db
+def test_subscribing_to_an_unregistered_model_is_an_invalid_request():
+    registry = ObjectStreamRegistry()
+    session = make_session(registry)
+
+    subscription = session.subscribe(
+        {
+            "op": "subscribe",
+            "kind": "model",
+            "model": "testapp.Note",
+        }
+    )
+
+    assert subscription is None
+    assert session.subscriptions == ()
+    assert session.transport.subscribed == []
+    assert session.transport.errors[0]["code"] == "invalid_request"
+
+
+@pytest.mark.django_db
+def test_unsubscribe_without_a_subscription_id_is_an_invalid_request():
+    registry = ObjectStreamRegistry()
+    session = make_session(registry)
+
+    assert session.handle_message({"op": "unsubscribe"}) is None
+    assert session.transport.errors == [
+        {
+            "code": "invalid_request",
+            "message": "Unsubscribe messages require a subscription_id.",
+            "details": None,
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_unsupported_op_is_an_invalid_request():
+    registry = ObjectStreamRegistry()
+    session = make_session(registry)
+
+    assert session.handle_message({"op": "resubscribe"}) is None
+    assert session.transport.errors == [
+        {
+            "code": "invalid_request",
+            "message": "Messages require a supported op.",
+            "details": None,
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_unsubscribing_an_inactive_subscription_reports_not_subscribed():
+    registry = ObjectStreamRegistry()
+    session = make_session(registry)
+
+    assert session.unsubscribe("sub_1") is False
+    assert session.transport.unsubscribed == []
+    assert session.transport.errors == [
+        {
+            "code": "not_subscribed",
+            "message": "Subscription is not active.",
+            "details": None,
+        }
+    ]
