@@ -62,12 +62,16 @@ class _BaseSubscriptionSession:
         request: Any = None,
         subscription_id_factory: Callable[[], str] | None = None,
         replay_limit: int = 1000,
+        max_subscriptions: int | None = 100,
+        max_member_pks: int | None = 10000,
     ):
         self.user = user
         self.transport = transport
         self.registry = registry
         self.request = request
         self.replay_limit = replay_limit
+        self.max_subscriptions = max_subscriptions
+        self.max_member_pks = max_member_pks
         self._subscriptions: dict[str, ActiveSubscription] = {}
         self._counter = count(1)
         self._subscription_id_factory = subscription_id_factory
@@ -109,6 +113,27 @@ class _BaseSubscriptionSession:
         request: SubscriptionRequest,
     ) -> set[str]:
         return {str(pk) for pk in self._subscription_queryset(registration, request).values_list("pk", flat=True)}
+
+    def _member_pks_exceed_limit(
+        self,
+        registration: ObjectStreamRegistration,
+        request: SubscriptionRequest,
+    ) -> bool:
+        """Check membership size with a bounded query, before materializing every pk."""
+
+        if self.max_member_pks is None:
+            return False
+        pks = self._subscription_queryset(registration, request).values_list("pk", flat=True)
+        return len(pks[: self.max_member_pks + 1]) > self.max_member_pks
+
+    def _connection_rejection(self, requested: SubscriptionRequest) -> tuple[str, str] | None:
+        """Return an error code and message when connection state forbids the subscription."""
+
+        if requested.subscription_id is not None and requested.subscription_id in self._subscriptions:
+            return ("duplicate_subscription", "Subscription id is already active on this connection.")
+        if self.max_subscriptions is not None and len(self._subscriptions) >= self.max_subscriptions:
+            return ("subscription_limit_exceeded", "Connection has too many active subscriptions.")
+        return None
 
     def _is_current_member(self, active: ActiveSubscription, event: StreamEvent) -> bool:
         if event.op == str(EventOperation.DELETED):
@@ -242,6 +267,11 @@ class SubscriptionSession(_BaseSubscriptionSession):
             self._send_error("invalid_request", str(exc))
             return None
 
+        rejection = self._connection_rejection(requested)
+        if rejection is not None:
+            self._send_error(*rejection)
+            return None
+
         if requested.search is not None:
             self._send_error("unsupported_search", "Search subscriptions are not supported yet.")
             return None
@@ -255,6 +285,9 @@ class SubscriptionSession(_BaseSubscriptionSession):
         acknowledged = replace(requested, subscription_id=subscription_id, cursor=snapshot_cursor)
 
         try:
+            if self._member_pks_exceed_limit(registration, acknowledged):
+                self._send_error("subscription_too_large", "Subscription matches too many objects.")
+                return None
             member_pks = self._current_member_pks(registration, acknowledged)
         except FilterValidationError as exc:
             self._send_error("invalid_filter", "Subscription filters are invalid.", details=exc.errors)
@@ -441,6 +474,11 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
             await self.transport.send_error("invalid_request", str(exc))
             return None
 
+        rejection = self._connection_rejection(requested)
+        if rejection is not None:
+            await self.transport.send_error(*rejection)
+            return None
+
         if requested.search is not None:
             await self.transport.send_error("unsupported_search", "Search subscriptions are not supported yet.")
             return None
@@ -454,6 +492,9 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
         acknowledged = replace(requested, subscription_id=subscription_id, cursor=snapshot_cursor)
 
         try:
+            if await database_sync_to_async(self._member_pks_exceed_limit)(registration, acknowledged):
+                await self.transport.send_error("subscription_too_large", "Subscription matches too many objects.")
+                return None
             member_pks = await database_sync_to_async(self._current_member_pks)(registration, acknowledged)
         except FilterValidationError as exc:
             await self.transport.send_error("invalid_filter", "Subscription filters are invalid.", details=exc.errors)

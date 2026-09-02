@@ -60,6 +60,10 @@ class NoteFilter(django_filters.FilterSet):
         fields = ["title"]
 
 
+TEST_MAX_SUBSCRIPTIONS = 2
+TEST_MAX_MEMBER_PKS = 2
+
+
 def make_session(registry):
     return AsyncSubscriptionSession(
         user=None,
@@ -501,6 +505,81 @@ def test_async_unsubscribing_an_inactive_subscription_reports_not_subscribed():
         {
             "code": "not_subscribed",
             "message": "Subscription is not active.",
+            "details": None,
+        }
+    ]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_async_reusing_an_active_subscription_id_is_rejected():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    session = make_session(registry)
+    first = {
+        "op": "subscribe",
+        "kind": "model",
+        "model": "testapp.Note",
+        "subscription_id": "client_1",
+    }
+
+    assert async_to_sync(session.subscribe)(first) is not None
+    assert async_to_sync(session.subscribe)(dict(first, kind="object", pk=1)) is None
+    assert [active.subscription_id for active in session.subscriptions] == ["client_1"]
+    assert session.transport.errors == [
+        {
+            "code": "duplicate_subscription",
+            "message": "Subscription id is already active on this connection.",
+            "details": None,
+        }
+    ]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_async_connection_rejects_subscriptions_past_the_limit():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    session = AsyncSubscriptionSession(
+        user=None,
+        transport=RecordingTransport(),
+        registry=registry,
+        max_subscriptions=TEST_MAX_SUBSCRIPTIONS,
+    )
+    request = {"op": "subscribe", "kind": "model", "model": "testapp.Note"}
+
+    assert async_to_sync(session.subscribe)(request) is not None
+    assert async_to_sync(session.subscribe)(request) is not None
+    assert async_to_sync(session.subscribe)(request) is None
+    assert len(session.subscriptions) == TEST_MAX_SUBSCRIPTIONS
+    assert session.transport.errors == [
+        {
+            "code": "subscription_limit_exceeded",
+            "message": "Connection has too many active subscriptions.",
+            "details": None,
+        }
+    ]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_async_subscription_matching_too_many_objects_is_rejected():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    for index in range(TEST_MAX_MEMBER_PKS + 1):
+        Note.objects.create(title=f"Open {index}")
+    session = AsyncSubscriptionSession(
+        user=None,
+        transport=RecordingTransport(),
+        registry=registry,
+        max_member_pks=TEST_MAX_MEMBER_PKS,
+    )
+
+    subscription = async_to_sync(session.subscribe)({"op": "subscribe", "kind": "model", "model": "testapp.Note"})
+
+    assert subscription is None
+    assert session.subscriptions == ()
+    assert session.transport.errors == [
+        {
+            "code": "subscription_too_large",
+            "message": "Subscription matches too many objects.",
             "details": None,
         }
     ]

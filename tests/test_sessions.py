@@ -12,6 +12,7 @@ from object_streams.outbox import record_broadcasted_through
 from object_streams.registry import ObjectStreamRegistry
 from object_streams.retention import prune_outbox
 from object_streams.sessions import SubscriptionSession
+from object_streams.subscriptions import SubscriptionKind
 from tests.helpers import create_deliverable_outbox_event as create_outbox_event
 from tests.testapp.models import Note
 
@@ -80,6 +81,10 @@ class RejectingNoteFilter(django_filters.FilterSet):
     def is_valid(self):
         msg = "FilterSets should not validate non-filter subscriptions."
         raise AssertionError(msg)
+
+
+TEST_MAX_SUBSCRIPTIONS = 2
+TEST_MAX_MEMBER_PKS = 2
 
 
 class PrefixVisibilityPolicy:
@@ -774,3 +779,117 @@ def test_unsubscribing_an_inactive_subscription_reports_not_subscribed():
             "details": None,
         }
     ]
+
+
+@pytest.mark.django_db
+def test_reusing_an_active_subscription_id_is_rejected():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    session = make_session(registry)
+    first = {
+        "op": "subscribe",
+        "kind": "model",
+        "model": "testapp.Note",
+        "subscription_id": "client_1",
+    }
+
+    assert session.subscribe(first) is not None
+    assert session.subscribe(dict(first, kind="object", pk=1)) is None
+    assert [active.subscription_id for active in session.subscriptions] == ["client_1"]
+    assert session.subscriptions[0].request.kind == SubscriptionKind.MODEL
+    assert session.transport.errors == [
+        {
+            "code": "duplicate_subscription",
+            "message": "Subscription id is already active on this connection.",
+            "details": None,
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_subscription_id_is_reusable_after_unsubscribing():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    session = make_session(registry)
+    request = {
+        "op": "subscribe",
+        "kind": "model",
+        "model": "testapp.Note",
+        "subscription_id": "client_1",
+    }
+
+    assert session.subscribe(request) is not None
+    assert session.unsubscribe("client_1") is True
+    assert session.subscribe(request) is not None
+    assert session.transport.errors == []
+
+
+@pytest.mark.django_db
+def test_connection_rejects_subscriptions_past_the_limit():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    session = SubscriptionSession(
+        user=None,
+        transport=RecordingTransport(),
+        registry=registry,
+        max_subscriptions=TEST_MAX_SUBSCRIPTIONS,
+    )
+    request = {"op": "subscribe", "kind": "model", "model": "testapp.Note"}
+
+    assert session.subscribe(request) is not None
+    assert session.subscribe(request) is not None
+    assert session.subscribe(request) is None
+    assert len(session.subscriptions) == TEST_MAX_SUBSCRIPTIONS
+    assert session.transport.errors == [
+        {
+            "code": "subscription_limit_exceeded",
+            "message": "Connection has too many active subscriptions.",
+            "details": None,
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_subscription_matching_too_many_objects_is_rejected():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    for index in range(TEST_MAX_MEMBER_PKS + 1):
+        Note.objects.create(title=f"Open {index}")
+    session = SubscriptionSession(
+        user=None,
+        transport=RecordingTransport(),
+        registry=registry,
+        max_member_pks=TEST_MAX_MEMBER_PKS,
+    )
+
+    subscription = session.subscribe({"op": "subscribe", "kind": "model", "model": "testapp.Note"})
+
+    assert subscription is None
+    assert session.subscriptions == ()
+    assert session.transport.errors == [
+        {
+            "code": "subscription_too_large",
+            "message": "Subscription matches too many objects.",
+            "details": None,
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_subscription_at_the_member_limit_is_accepted():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    for index in range(TEST_MAX_MEMBER_PKS):
+        Note.objects.create(title=f"Open {index}")
+    session = SubscriptionSession(
+        user=None,
+        transport=RecordingTransport(),
+        registry=registry,
+        max_member_pks=TEST_MAX_MEMBER_PKS,
+    )
+
+    subscription = session.subscribe({"op": "subscribe", "kind": "model", "model": "testapp.Note"})
+
+    assert subscription is not None
+    assert session.transport.errors == []
+    assert len(session.subscriptions[0].member_pks) == TEST_MAX_MEMBER_PKS
