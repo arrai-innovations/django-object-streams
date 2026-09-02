@@ -442,6 +442,7 @@ order.
 ### ASGI routing
 
 ```python
+from channels.auth import AuthMiddlewareStack
 from channels.routing import ProtocolTypeRouter
 from channels.routing import URLRouter
 from django.urls import path
@@ -451,10 +452,12 @@ from object_streams.transports.channels import ObjectStreamConsumer
 
 application = ProtocolTypeRouter(
     {
-        "websocket": URLRouter(
-            [
-                path("ws/object-streams/", ObjectStreamConsumer.as_asgi()),
-            ]
+        "websocket": AuthMiddlewareStack(
+            URLRouter(
+                [
+                    path("ws/object-streams/", ObjectStreamConsumer.as_asgi()),
+                ]
+            )
         ),
     }
 )
@@ -467,6 +470,31 @@ and model subscriptions join model groups, then each consumer evaluates the
 event against its own connection-local subscriptions and visibility policy.
 
 Your ASGI workers can run under Uvicorn, Daphne, or another ASGI server.
+
+### Authentication
+
+The consumer reads `scope["user"]` and passes it to every visibility policy. It
+does not authenticate connections itself, so the ASGI stack must populate that
+key before the consumer runs. `AuthMiddlewareStack` does this from the session
+cookie. Substitute your own middleware for token or header authentication.
+
+Without auth middleware, `scope["user"]` is unset and every policy receives
+`None`. The default `AllowAllVisibilityPolicy` ignores its user argument, so a
+registration that does not set `visibility` delivers every event for the model
+to every connection. Register a visibility policy for any model whose events
+are not public, and write that policy to deny unauthenticated users:
+
+```python
+class OwnerVisibilityPolicy:
+    def get_queryset(self, user, model, action="read"):
+        if user is None or not user.is_authenticated:
+            return model._default_manager.none()
+        return model._default_manager.filter(owner=user)
+```
+
+Rejecting unauthenticated connections at the transport is the stronger option.
+Subclass the consumer and close the socket in `connect()` when the scope has no
+authenticated user.
 
 ### Channel layer
 
