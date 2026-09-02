@@ -63,6 +63,9 @@ docs = [
 
 [tool.uv]
 default-groups = ["dev", "docs"]
+# Resolve against artifacts at least a day old, so a compromised release that is
+# pulled quickly is never locked. Relocking on different days can pick different
+# versions; the lock file, not this setting, is what makes an install repeatable.
 exclude-newer = "1 day"
 
 [tool.setuptools]
