@@ -607,3 +607,38 @@ def test_consumer_without_a_scope_user_sees_nothing_under_a_user_visibility_poli
         await communicator.disconnect()
 
     async_to_sync(run_test)()
+
+
+class SmallDedupeConsumer(ObjectStreamConsumer):
+    event_dedupe_size = 2
+
+
+def test_dedupe_window_suppresses_repeats_it_still_remembers():
+    consumer = SmallDedupeConsumer()
+
+    assert consumer._remember_outbox_id(1) is True
+    assert consumer._remember_outbox_id(2) is True
+    assert consumer._remember_outbox_id(1) is False
+    assert consumer._remember_outbox_id(2) is False
+
+
+def test_dedupe_window_evicts_the_oldest_id_once_it_is_full():
+    consumer = SmallDedupeConsumer()
+
+    consumer._remember_outbox_id(1)
+    consumer._remember_outbox_id(2)
+    consumer._remember_outbox_id(3)
+
+    assert consumer._seen_outbox_ids == {2, 3}
+    assert list(consumer._seen_outbox_order) == [2, 3]
+    assert consumer._remember_outbox_id(1) is True
+
+
+def test_dedupe_window_does_not_grow_past_its_size():
+    consumer = SmallDedupeConsumer()
+
+    for outbox_id in range(50):
+        consumer._remember_outbox_id(outbox_id)
+
+    assert len(consumer._seen_outbox_ids) == SmallDedupeConsumer.event_dedupe_size
+    assert len(consumer._seen_outbox_order) == SmallDedupeConsumer.event_dedupe_size
