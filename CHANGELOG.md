@@ -9,6 +9,8 @@ Entry conventions, including which commit types earn an entry, are in
 
 ## [Unreleased]
 
+## [0.1.0a0] - 2026-09-02
+
 ### Added
 
 - Model registration with `django-filter` compatible FilterSets and
@@ -30,4 +32,5 @@ Entry conventions, including which commit types earn an entry, are in
 - Per-connection limits for active subscriptions, subscription membership size,
   object replay, and the outbox id dedupe window.
 
-[unreleased]: https://github.com/arrai-innovations/django-object-streams/commits/main/
+[unreleased]: https://github.com/arrai-innovations/django-object-streams/compare/0.1.0a0...main
+[0.1.0a0]: https://github.com/arrai-innovations/django-object-streams/releases/tag/0.1.0a0
