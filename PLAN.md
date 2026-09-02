@@ -79,6 +79,30 @@ remaining decisions have been implemented, rejected, or moved here.
 - [ ] Later: document source adapter examples for workflow-like downstream
   systems without importing downstream code.
 
+## Denial Of Service Boundaries
+
+- [x] Done: per-connection subscription cap through `max_subscriptions`.
+- [x] Done: per-subscription membership cap through `max_member_pks`, checked
+  with a bounded query before the pk set is materialized.
+- [x] Done: reject a `subscription_id` that is already active, and discard the
+  previous Channels groups when subscription groups are replaced.
+- [ ] Next: inbound message validation limits for message size,
+  `subscription_id` length, `pk` length, filter key count and value size,
+  `ordering` length, and `shape` size.
+- [ ] Later: document that registered FilterSets are a cost boundary, and that
+  unbounded `icontains`, expensive joins, and large `in` lists should be
+  avoided or capped by the integrator.
+- [ ] Later: reduce fanout work for many subscriptions on one model, through
+  grouping or a per-event membership cache, now that caps bound the worst case.
+- [ ] Later: policy for repeated invalid messages and slow consumers, including
+  a per-connection error budget and documented close codes.
+- [ ] Later: guidance on `before`, `after`, and `metadata` payload size, given
+  the library delivers notices rather than object state.
+- [ ] Later: make the listener broadcast batch size configurable instead of the
+  hard-coded 1000 in `object_streams_listen`.
+- [ ] Later: document trigger capture volume for bulk writes, and the retention
+  and listener capacity that follows from it.
+
 ## Operations
 
 - [x] Done: listener management command.
@@ -117,6 +141,11 @@ remaining decisions have been implemented, rejected, or moved here.
   does not depend on pre-commit sequence allocation.
 - [x] Done: subscription handshake catch-up coverage for events committed while
   transport routing is being prepared.
+- [x] Done: protocol error response coverage for every documented error code in
+  both the sync and async runtimes.
+- [x] Done: transport coverage proving visibility policies apply to the
+  connection scope user.
+- [x] Done: dedupe window bounds and subscription cap coverage.
 - [ ] Later: add compatibility tests for non-integer primary keys.
 
 ## External Boundaries

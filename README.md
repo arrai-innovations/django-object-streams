@@ -403,6 +403,9 @@ carries structured data, such as FilterSet validation errors.
 | `not_found` | An object subscription target does not exist or is not visible. |
 | `not_subscribed` | Unsubscribe named an inactive subscription. |
 | `unsupported_search` | The request included `search`. |
+| `duplicate_subscription` | The `subscription_id` is already active on this connection. |
+| `subscription_limit_exceeded` | The connection already holds `max_subscriptions` subscriptions. |
+| `subscription_too_large` | The subscription matches more than `max_member_pks` objects. |
 | `invalid_event` | A fanout message arrived without an outbox id. |
 | `event_not_found` | A fanout message named an outbox row that does not exist. |
 
@@ -495,6 +498,35 @@ class OwnerVisibilityPolicy:
 Rejecting unauthenticated connections at the transport is the stronger option.
 Subclass the consumer and close the socket in `connect()` when the scope has no
 authenticated user.
+
+### Connection limits
+
+Every subscription costs memory and query work for the life of the connection.
+A filter or model subscription holds the primary key of every matching object so
+it can classify later events as `added`, `changed`, or `removed`, and each event
+on a registered model runs one membership check per active subscription on that
+model. A client that opens many subscriptions therefore multiplies the cost of
+every write.
+
+The consumer bounds this with three class attributes:
+
+| Attribute | Default | Effect |
+|---|---|---|
+| `max_subscriptions` | `100` | Active subscriptions per connection. `None` disables the limit. |
+| `max_member_pks` | `10000` | Objects one subscription may match. `None` disables the limit. |
+| `replay_limit` | `1000` | Object replay events sent before falling back to `resync_required`. |
+
+Subclass the consumer to change them:
+
+```python
+class WideObjectStreamConsumer(ObjectStreamConsumer):
+    max_subscriptions = 500
+    max_member_pks = 50000
+```
+
+These are backstops, not a substitute for authentication. Raise them
+deliberately, and keep in mind that `max_member_pks` is checked with a bounded
+query before the membership set is materialized.
 
 ### Channel layer
 
