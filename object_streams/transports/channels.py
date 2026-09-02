@@ -117,6 +117,9 @@ class ObjectStreamConsumer(AsyncJsonWebsocketConsumer):
     registry: ObjectStreamRegistry = default_registry
     session_class = AsyncSubscriptionSession
     event_dedupe_size = 1024
+    replay_limit = 1000
+    max_subscriptions: int | None = 100
+    max_member_pks: int | None = 10000
 
     def __init__(
         self,
@@ -141,6 +144,9 @@ class ObjectStreamConsumer(AsyncJsonWebsocketConsumer):
             request=self.scope,
             transport=self,
             registry=self.registry,
+            replay_limit=self.replay_limit,
+            max_subscriptions=self.max_subscriptions,
+            max_member_pks=self.max_member_pks,
         )
         await self.accept()
 
@@ -213,6 +219,7 @@ class ObjectStreamConsumer(AsyncJsonWebsocketConsumer):
     async def _add_subscription_groups(self, subscription: SubscriptionRequest) -> None:
         if subscription.subscription_id is None:
             return
+        await self._discard_subscription_groups(subscription.subscription_id)
         groups = subscription_group_names(subscription)
         self._subscription_groups[subscription.subscription_id] = groups
         for group_name in groups:

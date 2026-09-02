@@ -22,6 +22,7 @@ from object_streams.outbox import create_outbox_event
 from object_streams.producers import create_source_events
 from object_streams.registry import ObjectStreamRegistry
 from object_streams.sources import ModelSource
+from object_streams.subscriptions import SubscriptionRequest
 from object_streams.transports.channels import ObjectStreamConsumer
 from object_streams.transports.channels import broadcast_outbox_event
 from tests.testapp.models import Note
@@ -642,3 +643,23 @@ def test_dedupe_window_does_not_grow_past_its_size():
 
     assert len(consumer._seen_outbox_ids) == SmallDedupeConsumer.event_dedupe_size
     assert len(consumer._seen_outbox_order) == SmallDedupeConsumer.event_dedupe_size
+
+
+def test_replacing_subscription_groups_discards_the_previous_membership():
+    consumer = ObjectStreamConsumer()
+    consumer.channel_layer = None
+    consumer.channel_name = "test.channel"
+    model_subscription = SubscriptionRequest(kind="model", model="testapp.Note", subscription_id="s1")
+    object_subscription = SubscriptionRequest(
+        kind="object",
+        model="testapp.Note",
+        pk="7",
+        subscription_id="s1",
+    )
+
+    async_to_sync(consumer._add_subscription_groups)(model_subscription)
+    async_to_sync(consumer._add_subscription_groups)(object_subscription)
+    async_to_sync(consumer._discard_subscription_groups)("s1")
+
+    assert consumer._group_ref_counts == {}
+    assert consumer._subscription_groups == {}
