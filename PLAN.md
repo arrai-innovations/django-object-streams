@@ -173,6 +173,8 @@ rejected, or moved here, and was removed.
 - [x] Done: transport coverage proving visibility policies apply to the
   connection scope user.
 - [x] Done: dedupe window bounds and subscription cap coverage.
+- [x] Done: history adapter coverage for the record reference mapping and the
+  unimplemented adapter shells.
 - [ ] Later: add compatibility tests for non-integer primary keys.
 
 ## External Boundaries
