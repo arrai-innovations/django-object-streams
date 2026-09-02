@@ -9,8 +9,9 @@ from io import StringIO
 import django_filters
 import pytest
 from asgiref.sync import async_to_sync
-from asgiref.testing import ApplicationCommunicator
 from channels.db import database_sync_to_async
+from channels.testing import WebsocketCommunicator
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import override_settings
 
@@ -32,6 +33,19 @@ class NoteFilter(django_filters.FilterSet):
         fields = ["title"]
 
 
+class OwnerVisibilityPolicy:
+    """Scope rows to the connected user, the way an integrator would."""
+
+    def get_queryset(self, user, model, action="read"):
+        if user is None or not user.is_authenticated:
+            return model._default_manager.none()
+        return model._default_manager.filter(title__startswith=user.username)
+
+
+def make_user(username):
+    return get_user_model()._default_manager.create_user(username=username, password="test-password")
+
+
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels.layers.InMemoryChannelLayer",
@@ -44,44 +58,18 @@ REDIS_LISTENER_ATTEMPTS = 20
 REDIS_POLL_TIMEOUT = 0.25
 
 
-def make_communicator(registry):
-    application = ObjectStreamConsumer.as_asgi(registry=registry)
-    return ApplicationCommunicator(
-        application,
-        {
-            "type": "websocket",
-            "path": "/object-streams/",
-            "headers": [],
-            "query_string": b"",
-            "subprotocols": [],
-        },
+def make_communicator(registry, *, user=None):
+    communicator = WebsocketCommunicator(
+        ObjectStreamConsumer.as_asgi(registry=registry),
+        "/object-streams/",
     )
+    communicator.scope["user"] = user
+    return communicator
 
 
 async def connect(communicator):
-    await communicator.send_input({"type": "websocket.connect"})
-    response = await communicator.receive_output(timeout=1)
-    assert response["type"] == "websocket.accept"
-
-
-async def disconnect(communicator):
-    await communicator.send_input({"type": "websocket.disconnect", "code": 1000})
-    await communicator.wait(timeout=1)
-
-
-async def send_json(communicator, payload):
-    await communicator.send_input(
-        {
-            "type": "websocket.receive",
-            "text": json.dumps(payload),
-        }
-    )
-
-
-async def receive_json(communicator):
-    response = await communicator.receive_output(timeout=1)
-    assert response["type"] == "websocket.send"
-    return json.loads(response["text"])
+    connected, _subprotocol = await communicator.connect()
+    assert connected
 
 
 async def maybe_receive_json(communicator, *, timeout):
@@ -141,8 +129,7 @@ def test_object_stream_consumer_subscribes_and_unsubscribes():
 
     async def run_test():
         await connect(communicator)
-        await send_json(
-            communicator,
+        await communicator.send_json_to(
             {
                 "op": "subscribe",
                 "kind": "filter",
@@ -151,7 +138,7 @@ def test_object_stream_consumer_subscribes_and_unsubscribes():
             },
         )
 
-        assert await receive_json(communicator) == {
+        assert await communicator.receive_json_from() == {
             "type": "subscribed",
             "kind": "filter",
             "model": "testapp.Note",
@@ -160,19 +147,18 @@ def test_object_stream_consumer_subscribes_and_unsubscribes():
             "subscription_id": "sub_1",
         }
 
-        await send_json(
-            communicator,
+        await communicator.send_json_to(
             {
                 "op": "unsubscribe",
                 "subscription_id": "sub_1",
             },
         )
 
-        assert await receive_json(communicator) == {
+        assert await communicator.receive_json_from() == {
             "type": "unsubscribed",
             "subscription_id": "sub_1",
         }
-        await disconnect(communicator)
+        await communicator.disconnect()
 
     async_to_sync(run_test)()
 
@@ -186,15 +172,14 @@ def test_object_stream_consumer_delivers_outbox_event_json():
 
     async def run_test():
         await connect(communicator)
-        await send_json(
-            communicator,
+        await communicator.send_json_to(
             {
                 "op": "subscribe",
                 "kind": "model",
                 "model": "testapp.Note",
             },
         )
-        subscribed = await receive_json(communicator)
+        subscribed = await communicator.receive_json_from()
 
         row = await database_sync_to_async(create_outbox_event)(
             StreamEvent(
@@ -210,7 +195,7 @@ def test_object_stream_consumer_delivers_outbox_event_json():
             }
         )
 
-        assert await receive_json(communicator) == {
+        assert await communicator.receive_json_from() == {
             "type": "event",
             "subscription_id": subscribed["subscription_id"],
             "cursor": row.cursor,
@@ -221,7 +206,7 @@ def test_object_stream_consumer_delivers_outbox_event_json():
             "changed_fields": ["title"],
             "fetch": True,
         }
-        await disconnect(communicator)
+        await communicator.disconnect()
 
     async_to_sync(run_test)()
 
@@ -259,15 +244,14 @@ def test_redis_listener_command_delivers_producer_event_to_websocket():
 
         await connect(communicator)
         try:
-            await send_json(
-                communicator,
+            await communicator.send_json_to(
                 {
                     "op": "subscribe",
                     "kind": "model",
                     "model": "testapp.Note",
                 },
             )
-            subscribed = await receive_json(communicator)
+            subscribed = await communicator.receive_json_from()
             listener_thread.start()
 
             for attempt in range(REDIS_LISTENER_ATTEMPTS):
@@ -290,7 +274,7 @@ def test_redis_listener_command_delivers_producer_event_to_websocket():
                 raise result
         finally:
             if not communicator.future.done():
-                await disconnect(communicator)
+                await communicator.disconnect()
 
         assert payload is not None
         assert payload["type"] == "event"
@@ -320,8 +304,7 @@ def test_broadcast_outbox_event_delivers_to_matching_consumers():
     async def run_test():
         await connect(filter_communicator)
         await connect(object_communicator)
-        await send_json(
-            filter_communicator,
+        await filter_communicator.send_json_to(
             {
                 "op": "subscribe",
                 "kind": "filter",
@@ -329,9 +312,8 @@ def test_broadcast_outbox_event_delivers_to_matching_consumers():
                 "filter": {"title": "Open"},
             },
         )
-        filter_subscription = await receive_json(filter_communicator)
-        await send_json(
-            object_communicator,
+        filter_subscription = await filter_communicator.receive_json_from()
+        await object_communicator.send_json_to(
             {
                 "op": "subscribe",
                 "kind": "object",
@@ -339,7 +321,7 @@ def test_broadcast_outbox_event_delivers_to_matching_consumers():
                 "pk": note.pk,
             },
         )
-        object_subscription = await receive_json(object_communicator)
+        object_subscription = await object_communicator.receive_json_from()
 
         row = await database_sync_to_async(create_outbox_event)(
             StreamEvent(
@@ -350,7 +332,7 @@ def test_broadcast_outbox_event_delivers_to_matching_consumers():
         )
         await broadcast_outbox_event(row.pk)
 
-        assert await receive_json(filter_communicator) == {
+        assert await filter_communicator.receive_json_from() == {
             "type": "event",
             "subscription_id": filter_subscription["subscription_id"],
             "cursor": row.cursor,
@@ -361,7 +343,7 @@ def test_broadcast_outbox_event_delivers_to_matching_consumers():
             "changed_fields": ["title"],
             "fetch": True,
         }
-        assert await receive_json(object_communicator) == {
+        assert await object_communicator.receive_json_from() == {
             "type": "event",
             "subscription_id": object_subscription["subscription_id"],
             "cursor": row.cursor,
@@ -372,8 +354,8 @@ def test_broadcast_outbox_event_delivers_to_matching_consumers():
             "changed_fields": ["title"],
             "fetch": True,
         }
-        await disconnect(filter_communicator)
-        await disconnect(object_communicator)
+        await filter_communicator.disconnect()
+        await object_communicator.disconnect()
 
     async_to_sync(run_test)()
 
@@ -388,17 +370,15 @@ def test_consumer_deduplicates_events_from_overlapping_groups():
 
     async def run_test():
         await connect(communicator)
-        await send_json(
-            communicator,
+        await communicator.send_json_to(
             {
                 "op": "subscribe",
                 "kind": "model",
                 "model": "testapp.Note",
             },
         )
-        model_subscription = await receive_json(communicator)
-        await send_json(
-            communicator,
+        model_subscription = await communicator.receive_json_from()
+        await communicator.send_json_to(
             {
                 "op": "subscribe",
                 "kind": "object",
@@ -406,7 +386,7 @@ def test_consumer_deduplicates_events_from_overlapping_groups():
                 "pk": note.pk,
             },
         )
-        object_subscription = await receive_json(communicator)
+        object_subscription = await communicator.receive_json_from()
 
         row = await database_sync_to_async(create_outbox_event)(
             StreamEvent(
@@ -416,16 +396,15 @@ def test_consumer_deduplicates_events_from_overlapping_groups():
         )
         await broadcast_outbox_event(row.pk)
 
-        model_event = await receive_json(communicator)
-        object_event = await receive_json(communicator)
+        model_event = await communicator.receive_json_from()
+        object_event = await communicator.receive_json_from()
         assert model_event["subscription_id"] == model_subscription["subscription_id"]
         assert object_event["subscription_id"] == object_subscription["subscription_id"]
         assert model_event["cursor"] == row.cursor
         assert object_event["cursor"] == row.cursor
 
-        await asyncio.sleep(0.05)
-        assert communicator.output_queue.empty()
-        await disconnect(communicator)
+        assert await communicator.receive_nothing()
+        await communicator.disconnect()
 
     async_to_sync(run_test)()
 
@@ -440,18 +419,16 @@ def test_unsubscribing_keeps_shared_group_until_last_subscription_leaves():
 
     async def run_test():
         await connect(communicator)
-        await send_json(
-            communicator,
+        await communicator.send_json_to(
             {
                 "op": "subscribe",
                 "kind": "model",
                 "model": "testapp.Note",
             },
         )
-        first_subscription = await receive_json(communicator)
+        first_subscription = await communicator.receive_json_from()
         assert first_subscription["type"] == "subscribed", first_subscription
-        await send_json(
-            communicator,
+        await communicator.send_json_to(
             {
                 "op": "subscribe",
                 "kind": "filter",
@@ -459,17 +436,16 @@ def test_unsubscribing_keeps_shared_group_until_last_subscription_leaves():
                 "filter": {"title": "Open"},
             },
         )
-        remaining_subscription = await receive_json(communicator)
+        remaining_subscription = await communicator.receive_json_from()
         assert remaining_subscription["type"] == "subscribed", remaining_subscription
 
-        await send_json(
-            communicator,
+        await communicator.send_json_to(
             {
                 "op": "unsubscribe",
                 "subscription_id": first_subscription["subscription_id"],
             },
         )
-        assert await receive_json(communicator) == {
+        assert await communicator.receive_json_from() == {
             "type": "unsubscribed",
             "subscription_id": first_subscription["subscription_id"],
         }
@@ -482,10 +458,10 @@ def test_unsubscribing_keeps_shared_group_until_last_subscription_leaves():
         )
         await broadcast_outbox_event(row.pk)
 
-        event = await receive_json(communicator)
+        event = await communicator.receive_json_from()
         assert event["subscription_id"] == remaining_subscription["subscription_id"]
         assert event["cursor"] == row.cursor
-        await disconnect(communicator)
+        await communicator.disconnect()
 
     async_to_sync(run_test)()
 
@@ -505,8 +481,7 @@ def test_object_stream_consumer_sends_collection_resync_json():
 
     async def run_test():
         await connect(communicator)
-        await send_json(
-            communicator,
+        await communicator.send_json_to(
             {
                 "op": "subscribe",
                 "kind": "filter",
@@ -516,14 +491,14 @@ def test_object_stream_consumer_sends_collection_resync_json():
             },
         )
 
-        subscribed = await receive_json(communicator)
-        assert await receive_json(communicator) == {
+        subscribed = await communicator.receive_json_from()
+        assert await communicator.receive_json_from() == {
             "type": "resync_required",
             "subscription_id": subscribed["subscription_id"],
             "cursor": row.cursor,
             "reason": "cursor_replay_unavailable",
         }
-        await disconnect(communicator)
+        await communicator.disconnect()
 
     async_to_sync(run_test)()
 
@@ -535,8 +510,7 @@ def test_object_stream_consumer_sends_error_for_invalid_subscribe():
 
     async def run_test():
         await connect(communicator)
-        await send_json(
-            communicator,
+        await communicator.send_json_to(
             {
                 "op": "subscribe",
                 "kind": "model",
@@ -544,10 +518,92 @@ def test_object_stream_consumer_sends_error_for_invalid_subscribe():
             },
         )
 
-        payload = await receive_json(communicator)
+        payload = await communicator.receive_json_from()
         assert payload["type"] == "error"
         assert payload["code"] == "invalid_request"
         assert "not registered" in payload["message"]
-        await disconnect(communicator)
+        await communicator.disconnect()
+
+    async_to_sync(run_test)()
+
+
+@override_settings(CHANNEL_LAYERS=CHANNEL_LAYERS)
+@pytest.mark.django_db(transaction=True)
+def test_consumer_applies_visibility_policy_to_the_scope_user():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, visibility=OwnerVisibilityPolicy())
+    visible = Note.objects.create(title="alice visible")
+    hidden = Note.objects.create(title="bob hidden")
+    communicator = make_communicator(registry, user=make_user("alice"))
+
+    async def run_test():
+        await connect(communicator)
+        await communicator.send_json_to(
+            {
+                "op": "subscribe",
+                "kind": "model",
+                "model": "testapp.Note",
+            }
+        )
+        subscribed = await communicator.receive_json_from()
+
+        hidden_row = await database_sync_to_async(create_outbox_event)(
+            StreamEvent(
+                subject=ObjectRef.from_instance(hidden),
+                op=EventOperation.UPDATED,
+                changed_fields=("title",),
+            )
+        )
+        await broadcast_outbox_event(hidden_row.pk)
+        assert await communicator.receive_nothing()
+
+        visible_row = await database_sync_to_async(create_outbox_event)(
+            StreamEvent(
+                subject=ObjectRef.from_instance(visible),
+                op=EventOperation.UPDATED,
+                changed_fields=("title",),
+            )
+        )
+        await broadcast_outbox_event(visible_row.pk)
+
+        payload = await communicator.receive_json_from()
+        assert payload["subscription_id"] == subscribed["subscription_id"]
+        assert payload["cursor"] == visible_row.cursor
+        assert payload["subject"] == {"model": "testapp.Note", "pk": str(visible.pk)}
+        await communicator.disconnect()
+
+    async_to_sync(run_test)()
+
+
+@override_settings(CHANNEL_LAYERS=CHANNEL_LAYERS)
+@pytest.mark.django_db(transaction=True)
+def test_consumer_without_a_scope_user_sees_nothing_under_a_user_visibility_policy():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, visibility=OwnerVisibilityPolicy())
+    note = Note.objects.create(title="alice visible")
+    communicator = make_communicator(registry)
+
+    async def run_test():
+        await connect(communicator)
+        await communicator.send_json_to(
+            {
+                "op": "subscribe",
+                "kind": "model",
+                "model": "testapp.Note",
+            }
+        )
+        await communicator.receive_json_from()
+
+        row = await database_sync_to_async(create_outbox_event)(
+            StreamEvent(
+                subject=ObjectRef.from_instance(note),
+                op=EventOperation.UPDATED,
+                changed_fields=("title",),
+            )
+        )
+        await broadcast_outbox_event(row.pk)
+
+        assert await communicator.receive_nothing()
+        await communicator.disconnect()
 
     async_to_sync(run_test)()
