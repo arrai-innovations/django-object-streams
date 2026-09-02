@@ -23,24 +23,16 @@ adapters are expected to use PostgreSQL behavior directly.
 
 ## Install
 
-This pre-alpha package is not published to PyPI yet. Install from GitHub while
-the API is still settling:
-
-```console
-uv add git+https://github.com/arrai-innovations/django-object-streams.git
-```
-
-After the package is published:
-
 ```console
 uv add django-object-streams
 ```
 
-For local development:
-
 ```console
-just bootstrap
+pip install django-object-streams
 ```
+
+Trigger-based capture needs the `triggers` extra, described in
+[Trigger-Based Capture](#trigger-based-capture).
 
 ## Django Setup
 
@@ -58,6 +50,27 @@ Run migrations after installing:
 ```console
 python manage.py migrate object_streams
 ```
+
+### What a working install needs
+
+Installing and migrating creates the outbox table. It does not capture anything
+or deliver anything on its own. Four more pieces make a working deployment:
+
+1. **Register the models you want subscribable**, with a FilterSet and a
+   visibility policy. See [Usage Sketch](#usage-sketch).
+2. **Capture writes** into the outbox, either by calling the producers from
+   application code or by declaring Postgres triggers. See
+   [Trigger-Based Capture](#trigger-based-capture).
+3. **Route the consumer** into your ASGI application behind auth middleware.
+   See [ASGI routing](#asgi-routing) and [Authentication](#authentication).
+4. **Run the listener process**, `object_streams_listen`, and give it a
+   process-shared channel layer. See [Listener process](#listener-process) and
+   [Channel layer](#channel-layer).
+
+Step 4 is the one that fails quietly. Without a running listener the
+application still writes outbox rows and still sends `NOTIFY`, but nothing fans
+out to the ASGI workers, so subscriptions are accepted and no events ever
+arrive.
 
 ## Core Concepts
 
@@ -615,6 +628,12 @@ Two properties keep pruning safe:
   `cursor_pruned` rather than a silent, empty catch-up.
 
 ## Development
+
+Set up the local environment:
+
+```console
+just bootstrap
+```
 
 Tests expect a local PostgreSQL server and a role that can create test
 databases. By default, `tests.settings` connects through the local PostgreSQL

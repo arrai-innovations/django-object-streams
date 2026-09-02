@@ -47,8 +47,13 @@ rejected, or moved here, and was removed.
   unsubscribed, event, error, and resync messages.
 - [x] Done: production process topology, channel layer, and settings reference.
 - [x] Done: outbox retention settings and a pruning command.
-- [ ] Next: publish the first pre-alpha to PyPI and update the install docs to
-  drop the GitHub fallback.
+- [x] Done: websocket authentication reference covering `scope["user"]`, auth
+  middleware, and the default visibility policy.
+- [x] Done: install docs assume PyPI and orient a reader to the registration,
+  capture, routing, and listener steps a working install needs.
+- [ ] Next: publish the first pre-alpha to PyPI. The install docs already
+  describe the published package, so the README is only correct once the
+  release tag has been built and uploaded.
 
 ## Subscription Semantics
 
