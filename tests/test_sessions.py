@@ -1012,6 +1012,8 @@ WRONGLY_TYPED_SUBSCRIBE_FIELDS = [
     ({"cursor": 1.5}, "Subscription cursor must be an integer."),
     ({"cursor": True}, "Subscription cursor must be an integer."),
     ({"pk": {"id": 1}}, "Subscription pk must be a string or an integer."),
+    ({"pk": [1] * 300}, "Subscription pk must be a string or an integer."),
+    ({"subscription_id": ["s"] * 200}, "Subscription ids must be strings or integers."),
     ({"subscription_id": {"id": 1}}, "Subscription ids must be strings or integers."),
     ({"subscription_id": ["sub"]}, "Subscription ids must be strings or integers."),
 ]

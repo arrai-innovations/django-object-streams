@@ -698,6 +698,8 @@ def test_async_field_limits_set_to_none_are_disabled():
         ({"ordering": "-created_at"}, "Subscription ordering must be a list of strings."),
         ({"cursor": [1]}, "Subscription cursor must be an integer."),
         ({"subscription_id": {"id": 1}}, "Subscription ids must be strings or integers."),
+        ({"pk": [1] * 300}, "Subscription pk must be a string or an integer."),
+        ({"subscription_id": ["s"] * 200}, "Subscription ids must be strings or integers."),
     ],
 )
 def test_async_wrongly_typed_subscribe_fields_are_invalid_requests(fields, message):
