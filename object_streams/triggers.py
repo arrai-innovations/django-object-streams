@@ -430,13 +430,16 @@ class ObjectStreamTrigger(pgtrigger.Trigger):
         return self.subject is not None or self.subject_content_type is not None
 
     def _sql(self) -> str:
-        """Return the trigger body, leaving its model placeholders intact."""
+        """Return the trigger body, leaving its model placeholders intact.
+
+        The facet is filled in last, so placeholder text inside a facet name stays literal.
+        """
         return (
             (_MAPPED_FUNC if self.is_mapped else _FUNC)
-            .replace("__FACET__", _quote(self.facet))
             .replace("__CHANNEL_SETTING__", NOTIFY_CHANNEL_SETTING)
             .replace("__TRANSACTION_ID_KEY__", _quote(TRANSACTION_ID_KEY))
             .replace("__DEFAULT_CHANNEL__", _quote(self.channel or DEFAULT_NOTIFY_CHANNEL))
+            .replace("__FACET__", _quote(self.facet))
         )
 
     def get_func_template_kwargs(self, model):
