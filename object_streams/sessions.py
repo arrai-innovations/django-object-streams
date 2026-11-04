@@ -32,7 +32,7 @@ from object_streams.registry import registry as default_registry
 from object_streams.subscriptions import ResyncRequired
 from object_streams.subscriptions import SubscriptionKind
 from object_streams.subscriptions import SubscriptionRequest
-from object_streams.subscriptions import _is_scalar_id
+from object_streams.subscriptions import is_scalar_id
 from object_streams.subscriptions import normalize_subscription_id
 from object_streams.transports.base import Transport
 
@@ -152,7 +152,7 @@ class _BaseSubscriptionSession:
         return replace(request, pk=str(pk))
 
     def _subscription_id_rejection(self, subscription_id: Any) -> tuple[str, str, dict[str, Any]] | None:
-        if not _is_scalar_id(subscription_id) or self.max_subscription_id_length is None:
+        if not is_scalar_id(subscription_id) or self.max_subscription_id_length is None:
             return None
         if len(str(subscription_id)) > self.max_subscription_id_length:
             return _field_too_large("subscription_id", self.max_subscription_id_length, "characters")
@@ -192,7 +192,7 @@ class _BaseSubscriptionSession:
             return rejection
 
         pk = message.get("pk")
-        if _is_scalar_id(pk) and self.max_pk_length is not None and len(str(pk)) > self.max_pk_length:
+        if is_scalar_id(pk) and self.max_pk_length is not None and len(str(pk)) > self.max_pk_length:
             return _field_too_large("pk", self.max_pk_length, "characters")
 
         filters = message.get("filter") or message.get("filters")
