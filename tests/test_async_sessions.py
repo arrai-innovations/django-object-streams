@@ -698,6 +698,8 @@ def test_async_field_limits_set_to_none_are_disabled():
         ({"ordering": "-created_at"}, "Subscription ordering must be a list of strings."),
         ({"cursor": [1]}, "Subscription cursor must be an integer."),
         ({"subscription_id": {"id": 1}}, "Subscription ids must be strings or integers."),
+        ({"pk": [1] * 300}, "Subscription pk must be a string or an integer."),
+        ({"subscription_id": ["s"] * 200}, "Subscription ids must be strings or integers."),
     ],
 )
 def test_async_wrongly_typed_subscribe_fields_are_invalid_requests(fields, message):
@@ -765,3 +767,41 @@ def test_async_generated_subscription_ids_skip_an_id_the_client_chose():
 
     assert session.transport.errors == []
     assert [active.subscription_id for active in session.subscriptions] == ["sub_2", "sub_1", "sub_3"]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_async_object_pk_the_model_cannot_parse_is_an_invalid_request():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    session = make_session(registry)
+
+    subscription = async_to_sync(session.handle_message)(
+        {"op": "subscribe", "kind": "object", "model": "testapp.Note", "pk": "abc"}
+    )
+
+    assert subscription is None
+    assert session.transport.errors == [
+        {
+            "code": "invalid_request",
+            "message": "Subscription pk is not a valid primary key for testapp.Note.",
+            "details": None,
+        }
+    ]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_async_object_pk_in_a_non_canonical_form_receives_live_events():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    note = Note.objects.create(title="Open")
+    session = make_session(registry)
+
+    subscription = async_to_sync(session.handle_message)(
+        {"op": "subscribe", "kind": "object", "model": "testapp.Note", "pk": f"0{note.pk}"}
+    )
+    row = create_outbox_event(StreamEvent(subject=ObjectRef.from_instance(note)))
+    live = async_to_sync(session.publish)(row)
+
+    assert session.transport.errors == []
+    assert subscription.pk == str(note.pk)
+    assert len(live) == 1

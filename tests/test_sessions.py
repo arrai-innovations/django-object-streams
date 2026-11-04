@@ -1012,6 +1012,8 @@ WRONGLY_TYPED_SUBSCRIBE_FIELDS = [
     ({"cursor": 1.5}, "Subscription cursor must be an integer."),
     ({"cursor": True}, "Subscription cursor must be an integer."),
     ({"pk": {"id": 1}}, "Subscription pk must be a string or an integer."),
+    ({"pk": [1] * 300}, "Subscription pk must be a string or an integer."),
+    ({"subscription_id": ["s"] * 200}, "Subscription ids must be strings or integers."),
     ({"subscription_id": {"id": 1}}, "Subscription ids must be strings or integers."),
     ({"subscription_id": ["sub"]}, "Subscription ids must be strings or integers."),
 ]
@@ -1098,3 +1100,41 @@ def test_generated_subscription_ids_skip_an_id_the_client_chose():
 
     assert session.transport.errors == []
     assert [active.subscription_id for active in session.subscriptions] == ["sub_2", "sub_1", "sub_3"]
+
+
+@pytest.mark.django_db
+def test_an_object_pk_the_model_cannot_parse_is_an_invalid_request():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    session = make_session(registry)
+
+    subscription = session.handle_message({"op": "subscribe", "kind": "object", "model": "testapp.Note", "pk": "abc"})
+
+    assert subscription is None
+    assert session.transport.errors == [
+        {
+            "code": "invalid_request",
+            "message": "Subscription pk is not a valid primary key for testapp.Note.",
+            "details": None,
+        }
+    ]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("pk_form", ["0{pk}", " {pk}", "+{pk}", "{pk} "])
+def test_an_object_pk_in_a_non_canonical_form_receives_replay_and_live_events(pk_form):
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    note = Note.objects.create(title="Open")
+    create_outbox_event(StreamEvent(subject=ObjectRef.from_instance(note)))
+    session = make_session(registry)
+
+    subscription = session.handle_message(
+        {"op": "subscribe", "kind": "object", "model": "testapp.Note", "pk": pk_form.format(pk=note.pk), "cursor": 0}
+    )
+    live = session.publish(create_outbox_event(StreamEvent(subject=ObjectRef.from_instance(note))))
+
+    assert session.transport.errors == []
+    assert subscription.pk == str(note.pk)
+    assert len(session.transport.events) == len(["replayed", "live"])
+    assert len(live) == 1

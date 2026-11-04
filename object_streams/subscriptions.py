@@ -10,7 +10,13 @@ from enum import StrEnum
 from typing import Any
 
 
-__all__ = ("ResyncRequired", "SubscriptionKind", "SubscriptionRequest", "normalize_subscription_id")
+__all__ = (
+    "ResyncRequired",
+    "SubscriptionKind",
+    "SubscriptionRequest",
+    "is_scalar_id",
+    "normalize_subscription_id",
+)
 
 
 class SubscriptionKind(StrEnum):
@@ -78,7 +84,7 @@ class SubscriptionRequest:
             raise ValueError(msg)
 
         pk = message.get("pk")
-        if pk is not None and not _is_scalar_id(pk):
+        if pk is not None and not is_scalar_id(pk):
             msg = "Subscription pk must be a string or an integer."
             raise ValueError(msg)
 
@@ -102,7 +108,7 @@ class SubscriptionRequest:
             raise ValueError(msg)
 
         cursor = message.get("cursor")
-        if cursor is not None and not _is_scalar_id(cursor):
+        if cursor is not None and not is_scalar_id(cursor):
             msg = "Subscription cursor must be an integer."
             raise ValueError(msg)
 
@@ -150,13 +156,13 @@ def normalize_subscription_id(value: Any) -> str | None:
 
     if value is None:
         return None
-    if not _is_scalar_id(value):
+    if not is_scalar_id(value):
         msg = "Subscription ids must be strings or integers."
         raise ValueError(msg)
     return str(value)
 
 
-def _is_scalar_id(value: Any) -> bool:
+def is_scalar_id(value: Any) -> bool:
     """Return whether a JSON value can identify a row, a cursor, or a subscription."""
 
     return isinstance(value, str) or (isinstance(value, int) and not isinstance(value, bool))

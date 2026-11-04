@@ -13,6 +13,7 @@ from typing import Any
 
 from asgiref.sync import async_to_sync
 from channels.db import database_sync_to_async
+from django.core.exceptions import ValidationError
 from django.db import models
 
 from object_streams.events import EventOperation
@@ -31,6 +32,7 @@ from object_streams.registry import registry as default_registry
 from object_streams.subscriptions import ResyncRequired
 from object_streams.subscriptions import SubscriptionKind
 from object_streams.subscriptions import SubscriptionRequest
+from object_streams.subscriptions import is_scalar_id
 from object_streams.subscriptions import normalize_subscription_id
 from object_streams.transports.base import Transport
 
@@ -128,8 +130,29 @@ class _BaseSubscriptionSession:
             return message
         return SubscriptionRequest.from_message(message)
 
+    def _canonical_request(
+        self,
+        registration: ObjectStreamRegistration,
+        request: SubscriptionRequest,
+    ) -> SubscriptionRequest:
+        """Return the request with an object subscription's pk in the model's canonical text form.
+
+        Events, replay, and transport groups match the subject pk as text, so ``"02"``
+        becomes ``"2"`` for an integer primary key. Raise ``ValueError`` when the
+        model cannot parse the pk.
+        """
+
+        if request.kind != SubscriptionKind.OBJECT:
+            return request
+        try:
+            pk = registration.model._meta.pk.to_python(request.pk)
+        except ValidationError:
+            msg = f"Subscription pk is not a valid primary key for {registration.model_label}."
+            raise ValueError(msg) from None
+        return replace(request, pk=str(pk))
+
     def _subscription_id_rejection(self, subscription_id: Any) -> tuple[str, str, dict[str, Any]] | None:
-        if subscription_id is None or self.max_subscription_id_length is None:
+        if not is_scalar_id(subscription_id) or self.max_subscription_id_length is None:
             return None
         if len(str(subscription_id)) > self.max_subscription_id_length:
             return _field_too_large("subscription_id", self.max_subscription_id_length, "characters")
@@ -156,7 +179,7 @@ class _BaseSubscriptionSession:
     ) -> tuple[str, str, Any] | None:
         """Return an error when a subscribe message holds invalid text or a field exceeds its size limit.
 
-        A field of the wrong type passes here and is rejected when the request is built.
+        A field of the wrong type skips its size check and is rejected when the request is built.
         """
 
         if isinstance(message, SubscriptionRequest):
@@ -169,7 +192,7 @@ class _BaseSubscriptionSession:
             return rejection
 
         pk = message.get("pk")
-        if pk is not None and self.max_pk_length is not None and len(str(pk)) > self.max_pk_length:
+        if is_scalar_id(pk) and self.max_pk_length is not None and len(str(pk)) > self.max_pk_length:
             return _field_too_large("pk", self.max_pk_length, "characters")
 
         filters = message.get("filter") or message.get("filters")
@@ -384,6 +407,7 @@ class SubscriptionSession(_BaseSubscriptionSession):
         try:
             requested = self._coerce_subscription_request(message)
             registration = self.registry.get(requested.model)
+            requested = self._canonical_request(registration, requested)
         except (LookupError, NotRegistered, ValueError) as exc:
             self._send_error("invalid_request", str(exc))
             return None
@@ -598,6 +622,7 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
         try:
             requested = self._coerce_subscription_request(message)
             registration = self.registry.get(requested.model)
+            requested = self._canonical_request(registration, requested)
         except (LookupError, NotRegistered, ValueError) as exc:
             await self.transport.send_error("invalid_request", str(exc))
             return None

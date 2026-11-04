@@ -235,6 +235,12 @@ def test_a_foreign_key_to_a_unique_column_maps_to_the_parent_primary_key():
     assert row.to_stream_event().subject == ObjectRef.from_instance(note)
 
 
+def test_placeholder_text_in_a_facet_stays_literal():
+    trigger = ObjectStreamTrigger(name="probe", facet="a__TRANSACTION_ID_KEY__b")
+
+    assert "'a__TRANSACTION_ID_KEY__b'" in trigger.compile(TriggeredNote).sql.kwargs["func"]
+
+
 def test_the_default_trigger_body_is_not_mapped():
     trigger = ObjectStreamTrigger(name="probe")
 
