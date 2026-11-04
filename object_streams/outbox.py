@@ -12,6 +12,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.db import models
 from django.db import transaction
 
+from object_streams.events import TRANSACTION_ID_KEY
 from object_streams.events import ObjectRef
 from object_streams.events import SourceRef
 from object_streams.events import StreamEvent
@@ -37,11 +38,6 @@ __all__ = (
     "record_pruned_through",
     "replay_is_complete",
 )
-
-
-# Metadata key holding the Postgres transaction id, shared by capture triggers and
-# the outbox helpers. Events with equal values were committed by one transaction.
-TRANSACTION_ID_KEY = "transaction_id"
 
 
 def _model_label(model: type[models.Model] | str) -> str:

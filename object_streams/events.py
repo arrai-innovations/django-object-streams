@@ -13,12 +13,18 @@ from django.db import models
 
 
 __all__ = (
+    "TRANSACTION_ID_KEY",
     "EventOperation",
     "ListAction",
     "ObjectRef",
     "SourceRef",
     "StreamEvent",
 )
+
+
+# Metadata key holding the Postgres transaction id, shared by capture triggers and
+# the outbox helpers. Events with equal values were committed by one transaction.
+TRANSACTION_ID_KEY = "transaction_id"
 
 
 class EventOperation(StrEnum):
@@ -151,7 +157,7 @@ class StreamEvent:
         capture trigger.
         """
 
-        value = self.metadata.get("transaction_id")
+        value = self.metadata.get(TRANSACTION_ID_KEY)
         return None if value is None else str(value)
 
     def as_dict(self) -> dict[str, Any]:
