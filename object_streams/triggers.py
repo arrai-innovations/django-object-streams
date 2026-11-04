@@ -250,6 +250,17 @@ def _quote_name(name: str) -> str:
     return f'"{escaped}"'
 
 
+def _quote_table(name: str) -> str:
+    """Quote a table name the way Django and pgtrigger do.
+
+    A name that is already quoted is left alone, so the ``'schema"."table'`` form of
+    ``db_table`` compiles to ``"schema"."table"``.
+    """
+    if name.startswith('"') and name.endswith('"'):
+        return name
+    return f'"{name}"'
+
+
 def _content_type_lookup(meta) -> str:
     return (
         f"(SELECT id FROM django_content_type WHERE app_label = {_quote(meta.app_label)} "
@@ -302,7 +313,7 @@ def _path_value(model, path: str) -> tuple[str, Any]:
 def _column_value(model, column: str, key_value: str | None, key_column: str | None) -> str:
     if key_value is None:
         return f"{_ROW}.{_quote_name(column)}"
-    table = _quote_name(model._meta.concrete_model._meta.db_table)
+    table = _quote_table(model._meta.concrete_model._meta.db_table)
     return f"(SELECT {_quote_name(column)} FROM {table} WHERE {_quote_name(key_column)} = {key_value})"
 
 
@@ -341,6 +352,14 @@ class ObjectStreamTrigger(pgtrigger.Trigger):
     itself still exists. A delete is mapped through the old row. An update that moves
     the row to another subject writes one row for the old subject and one for the new
     subject. A subject whose content type or primary key is null is skipped.
+
+    Only the first name in a path is read from the old or new row. Each later hop
+    reads the related row as it is when the trigger runs. If that row was already
+    deleted in the same transaction, the subject resolves to null and the write is
+    skipped. A database-level cascade such as ``DB_CASCADE`` deletes the parent row
+    before its children, so with ``subject="order__customer"`` the cascaded delete
+    of an order's lines writes nothing for the customer. An ORM ``CASCADE`` deletes
+    the children first and is captured.
 
     ``changed_fields`` is computed by comparing the old and new row, so it reports
     database column names. A foreign key appears as ``supplier_id`` rather than

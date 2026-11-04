@@ -1,6 +1,7 @@
 import pytest
 from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
+from django.db import connection
 from django.db import transaction
 from django.db.migrations.state import ProjectState
 
@@ -186,6 +187,42 @@ def test_a_child_row_delete_cascading_from_its_parent_maps_through_the_old_row()
 
     [row] = new_rows(before)
     assert row.subject_object_id == str(note_pk)
+
+
+@pytest.mark.django_db
+def test_an_orm_cascade_through_a_multi_hop_path_is_captured():
+    note = Note.objects.create(title="Open")
+    definition = note_definition()
+    StateRecord.objects.create(definition=definition, object_id=str(note.pk), state="draft")
+    before = last_id()
+
+    definition.delete()
+
+    [row] = new_rows(before)
+    assert row.to_stream_event().subject == ObjectRef.from_instance(note)
+
+
+@pytest.mark.django_db
+def test_a_multi_hop_path_through_an_already_deleted_row_is_skipped():
+    """A later hop reads the current row, so a parent deleted first leaves no subject."""
+    note = Note.objects.create(title="Open")
+    definition = note_definition()
+    StateRecord.objects.create(definition=definition, object_id=str(note.pk), state="draft")
+    before = last_id()
+
+    with transaction.atomic(), connection.cursor() as cursor:
+        cursor.execute(f"DELETE FROM {StateDefinition._meta.db_table} WHERE id = %s", [definition.pk])
+        cursor.execute(f"DELETE FROM {StateRecord._meta.db_table} WHERE definition_id = %s", [definition.pk])
+
+    assert new_rows(before) == []
+
+
+def test_a_schema_qualified_table_is_quoted_as_django_quotes_it(monkeypatch):
+    monkeypatch.setattr(StateDefinition._meta, "db_table", 'workflow"."statedefinition')
+
+    func = StateRecord._meta.triggers[0].compile(StateRecord).sql.kwargs["func"]
+
+    assert 'FROM "workflow"."statedefinition" WHERE' in func
 
 
 @pytest.mark.django_db

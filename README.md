@@ -263,7 +263,11 @@ A mapped trigger behaves differently from the default one in these ways:
   new subject.
 - A subject whose content type or primary key is null is skipped. So is a
   subject whose path passes through a row that is already deleted, such as a
-  definition row removed before the state rows that point at it.
+  definition row removed before the state rows that point at it. A
+  database-level cascade (`on_delete=models.DB_CASCADE`) deletes the parent
+  first, so with `subject="order__customer"` the cascaded delete of an order's
+  lines writes nothing for the customer. An ORM `CASCADE` deletes the lines
+  first and is captured.
 
 The trigger sends its own `pg_notify`, which is transactional: the notification
 arrives when the transaction commits and is discarded when it rolls back. It
