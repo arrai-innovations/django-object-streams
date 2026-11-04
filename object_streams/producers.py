@@ -15,7 +15,7 @@ from object_streams.events import SourceRef
 from object_streams.events import StreamEvent
 from object_streams.models import ObjectStreamEvent
 from object_streams.outbox import create_outbox_event
-from object_streams.outbox import enqueue_outbox_event
+from object_streams.outbox import enqueue_outbox_events
 from object_streams.registry import ObjectStreamRegistry
 from object_streams.registry import registry as default_registry
 
@@ -104,7 +104,11 @@ def enqueue_source_events(
     registry: ObjectStreamRegistry = default_registry,
     using: str | None = None,
 ) -> tuple[StreamEvent, ...]:
-    """Schedule outbox rows for a changed source instance after commit."""
+    """Schedule outbox rows for a changed source instance after commit.
+
+    The id of the caller's transaction is read when this runs, so the rows record
+    the transaction that made the change rather than the one that writes them.
+    """
 
     events = build_source_events(
         instance,
@@ -115,8 +119,7 @@ def enqueue_source_events(
         metadata=metadata,
         registry=registry,
     )
-    for event in events:
-        enqueue_outbox_event(event, using=using, notify=notify)
+    enqueue_outbox_events(events, using=using, notify=notify)
     return events
 
 

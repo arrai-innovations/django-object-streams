@@ -31,7 +31,7 @@ def test_create_outbox_event_round_trips_to_stream_event():
     assert round_tripped.source == SourceRef(model=Note, pk=1)
     assert round_tripped.changed_fields == ("title",)
     assert round_tripped.after == {"title": "Revised"}
-    assert round_tripped.metadata == {"reason": "test"}
+    assert round_tripped.metadata == {"reason": "test", "transaction_id": row.metadata["transaction_id"]}
 
 
 @pytest.mark.django_db(transaction=True)

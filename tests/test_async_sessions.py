@@ -250,6 +250,7 @@ def test_async_session_object_replay_sends_subject_events_after_cursor():
             "list_action": "changed",
             "changed_fields": ["title"],
             "fetch": True,
+            "metadata": {"transaction_id": row.metadata["transaction_id"]},
         }
     ]
 

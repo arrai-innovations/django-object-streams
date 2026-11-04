@@ -21,6 +21,18 @@ Entry conventions, including which commit types earn an entry, are in
   installed in the database (`object_streams.W001`) or does not match its
   declaration (`object_streams.W002`). Run it with
   `manage.py check --database <alias>`.
+- `StreamEvent.transaction_id`, which reads `metadata.transaction_id`, and
+  `enqueue_outbox_events`, which schedules several events with one transaction
+  id lookup. The protocol reference documents how a client coalesces the events
+  of one transaction.
+
+### Changed
+
+- The producer and outbox helpers record the Postgres transaction id in
+  `metadata.transaction_id`, as capture triggers already did. The `enqueue_*`
+  helpers read it when they are called, so the value names the caller's
+  transaction rather than the one that writes the row after commit. Each call
+  costs one extra query. A `transaction_id` passed in `metadata` is replaced.
 
 ## [0.1.0a0] - 2026-09-02
 

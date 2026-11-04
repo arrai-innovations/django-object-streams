@@ -142,6 +142,18 @@ class StreamEvent:
         if self.after is not None:
             object.__setattr__(self, "after", dict(self.after))
 
+    @property
+    def transaction_id(self) -> str | None:
+        """Return the id of the Postgres transaction that committed the change.
+
+        Events with the same id were committed by one database transaction. The
+        value is None when the event did not pass through the outbox helpers or a
+        capture trigger.
+        """
+
+        value = self.metadata.get("transaction_id")
+        return None if value is None else str(value)
+
     def as_dict(self) -> dict[str, Any]:
         value: dict[str, Any] = {
             "type": "event",

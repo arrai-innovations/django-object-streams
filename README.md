@@ -210,6 +210,8 @@ Every captured row records the Postgres transaction id in `metadata`:
 Events written by one database transaction share it, so a client can coalesce
 them into a single refetch instead of one per row. This is not an application
 action identifier: one request or audit context may span several transactions.
+The producers record the same value, as described under
+[Coalescing by transaction](#coalescing-by-transaction).
 
 The trigger sends its own `pg_notify`, which is transactional: the notification
 arrives when the transaction commits and is discarded when it rolls back. It
@@ -378,6 +380,11 @@ cursor the client requested.
 
 `op` is the source operation: `created`, `updated`, or `deleted`.
 
+`metadata` is present when the outbox row carries metadata. Its
+`transaction_id` key holds the Postgres transaction id that committed the
+change. Capture triggers and the producer helpers set it. It is also available
+as `StreamEvent.transaction_id`.
+
 `list_action` is the effect on this subscription:
 
 | `list_action` | Meaning |
@@ -389,6 +396,39 @@ cursor the client requested.
 
 Object subscriptions can usually ignore `list_action`. Filter and model
 subscriptions need it. Events with no effect on a subscription are not sent.
+
+#### Coalescing by transaction
+
+Events with the same `metadata.transaction_id` were committed by one database
+transaction. A client can collect them and refetch each subject once, instead
+of once per event.
+
+What is guaranteed:
+
+- Two events with the same `transaction_id` came from the same transaction.
+- Rows written by a capture trigger or by `create_source_events` commit with the
+  change, so the events of one transaction become visible together.
+- The producers record the transaction that called them, not the later one that
+  writes the row. `enqueue_source_events` and `enqueue_outbox_event` read the id
+  when they run, and `create_source_events` and `create_outbox_event` read it in
+  the transaction that writes the row.
+
+What is not guaranteed:
+
+- The events of one transaction are not always adjacent in cursor order. Other
+  transactions' events can fall between them.
+- `enqueue_source_events` writes each row after the commit, so the events of one
+  transaction can arrive spread over time. A client that coalesces them needs a
+  short wait, not a signal that the transaction is complete.
+- A transaction is not a request or a user action. One action may commit several
+  transactions, and a client cannot tell from `transaction_id` that it is done.
+- A subscription receives only the events that affect it, so it cannot count
+  how many events a transaction wrote.
+- An event without `transaction_id`, such as a row written before this field
+  was recorded, cannot be coalesced. Treat it on its own.
+
+`transaction_id` is a reserved metadata key. The outbox helpers replace a value
+passed in `metadata` under that key.
 
 `resync_required` is a subscription-level message for cases where the server
 cannot safely compute the delta. It carries no subject. The client should

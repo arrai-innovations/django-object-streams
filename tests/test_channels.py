@@ -206,6 +206,7 @@ def test_object_stream_consumer_delivers_outbox_event_json():
             "list_action": "changed",
             "changed_fields": ["title"],
             "fetch": True,
+            "metadata": {"transaction_id": row.metadata["transaction_id"]},
         }
         await communicator.disconnect()
 
@@ -343,6 +344,7 @@ def test_broadcast_outbox_event_delivers_to_matching_consumers():
             "list_action": "changed",
             "changed_fields": ["title"],
             "fetch": True,
+            "metadata": {"transaction_id": row.metadata["transaction_id"]},
         }
         assert await object_communicator.receive_json_from() == {
             "type": "event",
@@ -354,6 +356,7 @@ def test_broadcast_outbox_event_delivers_to_matching_consumers():
             "list_action": "changed",
             "changed_fields": ["title"],
             "fetch": True,
+            "metadata": {"transaction_id": row.metadata["transaction_id"]},
         }
         await filter_communicator.disconnect()
         await object_communicator.disconnect()
