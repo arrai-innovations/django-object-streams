@@ -13,6 +13,7 @@ from typing import Any
 
 from asgiref.sync import async_to_sync
 from channels.db import database_sync_to_async
+from django.core.exceptions import ValidationError
 from django.db import models
 
 from object_streams.events import EventOperation
@@ -128,6 +129,17 @@ class _BaseSubscriptionSession:
         if isinstance(message, SubscriptionRequest):
             return message
         return SubscriptionRequest.from_message(message)
+
+    def _validate_pk(self, registration: ObjectStreamRegistration, request: SubscriptionRequest) -> None:
+        """Raise ``ValueError`` when an object subscription's pk cannot identify a row of the model."""
+
+        if request.kind != SubscriptionKind.OBJECT:
+            return
+        try:
+            registration.model._meta.pk.to_python(request.pk)
+        except ValidationError:
+            msg = f"Subscription pk is not a valid primary key for {registration.model_label}."
+            raise ValueError(msg) from None
 
     def _subscription_id_rejection(self, subscription_id: Any) -> tuple[str, str, dict[str, Any]] | None:
         if not _is_scalar_id(subscription_id) or self.max_subscription_id_length is None:
@@ -385,6 +397,7 @@ class SubscriptionSession(_BaseSubscriptionSession):
         try:
             requested = self._coerce_subscription_request(message)
             registration = self.registry.get(requested.model)
+            self._validate_pk(registration, requested)
         except (LookupError, NotRegistered, ValueError) as exc:
             self._send_error("invalid_request", str(exc))
             return None
@@ -599,6 +612,7 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
         try:
             requested = self._coerce_subscription_request(message)
             registration = self.registry.get(requested.model)
+            self._validate_pk(registration, requested)
         except (LookupError, NotRegistered, ValueError) as exc:
             await self.transport.send_error("invalid_request", str(exc))
             return None

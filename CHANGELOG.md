@@ -55,6 +55,9 @@ Entry conventions, including which commit types earn an entry, are in
 - A subscribe message holding an unpaired surrogate, such as `"\ud800"` in a
   filter value, now gets an `invalid_request` error. Before, the session raised
   `UnicodeEncodeError` when it measured the value or queried with it.
+- An object subscription whose `pk` the model cannot parse, such as `"abc"` for
+  an integer primary key, now gets an `invalid_request` error. Before, the
+  session raised `ValueError` from the membership query.
 - A generated subscription id no longer replaces an active subscription whose
   client-chosen id has the same value, such as `sub_2`. The generator skips ids
   that are already active.

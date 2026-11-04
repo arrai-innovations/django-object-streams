@@ -767,3 +767,23 @@ def test_async_generated_subscription_ids_skip_an_id_the_client_chose():
 
     assert session.transport.errors == []
     assert [active.subscription_id for active in session.subscriptions] == ["sub_2", "sub_1", "sub_3"]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_async_object_pk_the_model_cannot_parse_is_an_invalid_request():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    session = make_session(registry)
+
+    subscription = async_to_sync(session.handle_message)(
+        {"op": "subscribe", "kind": "object", "model": "testapp.Note", "pk": "abc"}
+    )
+
+    assert subscription is None
+    assert session.transport.errors == [
+        {
+            "code": "invalid_request",
+            "message": "Subscription pk is not a valid primary key for testapp.Note.",
+            "details": None,
+        }
+    ]
