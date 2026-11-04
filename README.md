@@ -8,7 +8,7 @@ It is designed to tell clients what changed and whether they should refetch thro
 
 ## Status
 
-Pre-alpha. The current package includes the core registration API, a replayable
+Alpha. The current package includes the core registration API, a replayable
 outbox table, generic source-to-event producer helpers, and a connection-local
 subscription session runtime. A minimal Channels JSON websocket consumer is
 available with channel-layer fanout and PostgreSQL `LISTEN/NOTIFY` wakeups.
