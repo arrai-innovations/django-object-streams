@@ -695,7 +695,7 @@ def test_async_field_limits_set_to_none_are_disabled():
     ("fields", "message"),
     [
         ({"filter": 5}, "Subscription filter must be a JSON object."),
-        ({"ordering": "-created"}, "Subscription ordering must be a list of strings."),
+        ({"ordering": "-created_at"}, "Subscription ordering must be a list of strings."),
         ({"cursor": [1]}, "Subscription cursor must be an integer."),
         ({"subscription_id": {"id": 1}}, "Subscription ids must be strings or integers."),
     ],
@@ -727,3 +727,41 @@ def test_async_unsubscribe_with_a_wrongly_typed_subscription_id_is_an_invalid_re
             "details": None,
         }
     ]
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    "fields",
+    [
+        pytest.param({"kind": "filter", "filter": {"title": "\ud800"}}, id="filter"),
+        pytest.param({"kind": "model", "shape": {"fields": ["\udfff"]}}, id="shape"),
+        pytest.param({"kind": "object", "pk": "\ud800"}, id="pk"),
+    ],
+)
+def test_async_unpaired_surrogates_are_invalid_requests(fields):
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    session = make_limited_session(registry)
+
+    message = {"op": "subscribe", "kind": "model", "model": "testapp.Note", **fields}
+    assert async_to_sync(session.handle_message)(message) is None
+
+    assert session.subscriptions == ()
+    assert session.transport.errors == [
+        {"code": "invalid_request", "message": "Messages must not contain unpaired surrogates.", "details": None}
+    ]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_async_generated_subscription_ids_skip_an_id_the_client_chose():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    session = make_session(registry)
+    message = {"op": "subscribe", "kind": "model", "model": "testapp.Note"}
+
+    async_to_sync(session.handle_message)({**message, "subscription_id": "sub_2"})
+    async_to_sync(session.handle_message)(message)
+    async_to_sync(session.handle_message)(message)
+
+    assert session.transport.errors == []
+    assert [active.subscription_id for active in session.subscriptions] == ["sub_2", "sub_1", "sub_3"]

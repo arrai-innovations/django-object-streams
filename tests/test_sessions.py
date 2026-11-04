@@ -1004,9 +1004,10 @@ WRONGLY_TYPED_SUBSCRIBE_FIELDS = [
     ({"filter": 5}, "Subscription filter must be a JSON object."),
     ({"filter": ["status"]}, "Subscription filter must be a JSON object."),
     ({"ordering": 5}, "Subscription ordering must be a list of strings."),
-    ({"ordering": "-created"}, "Subscription ordering must be a list of strings."),
+    ({"ordering": "-created_at"}, "Subscription ordering must be a list of strings."),
     ({"ordering": ["title", 1]}, "Subscription ordering must be a list of strings."),
     ({"shape": ["fields"]}, "Subscription shape must be a JSON object."),
+    ({"shape": "x" * 5000}, "Subscription shape must be a JSON object."),
     ({"cursor": [1]}, "Subscription cursor must be an integer."),
     ({"cursor": 1.5}, "Subscription cursor must be an integer."),
     ({"cursor": True}, "Subscription cursor must be an integer."),
@@ -1058,3 +1059,42 @@ def test_integer_subscription_ids_are_normalized_to_strings():
     assert subscription.subscription_id == "7"
     assert session.handle_message({"op": "unsubscribe", "subscription_id": 7}) is True
     assert session.transport.errors == []
+
+
+UNPAIRED_SURROGATE_FIELDS = [
+    pytest.param({"kind": "filter", "filter": {"title": "\ud800"}}, id="filter"),
+    pytest.param({"kind": "model", "shape": {"fields": ["\udfff"]}}, id="shape"),
+    pytest.param({"kind": "object", "pk": "\ud800"}, id="pk"),
+]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("fields", UNPAIRED_SURROGATE_FIELDS)
+@pytest.mark.parametrize("limits", [{}, dict.fromkeys(TEST_FIELD_LIMITS)], ids=["limited", "unlimited"])
+def test_unpaired_surrogates_are_invalid_requests(fields, limits):
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    session = make_limited_session(registry, **limits)
+
+    message = {"op": "subscribe", "kind": "model", "model": "testapp.Note", **fields}
+    assert session.handle_message(message) is None
+
+    assert session.subscriptions == ()
+    assert session.transport.errors == [
+        {"code": "invalid_request", "message": "Messages must not contain unpaired surrogates.", "details": None}
+    ]
+
+
+@pytest.mark.django_db
+def test_generated_subscription_ids_skip_an_id_the_client_chose():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    session = make_session(registry)
+    message = {"op": "subscribe", "kind": "model", "model": "testapp.Note"}
+
+    session.handle_message({**message, "subscription_id": "sub_2"})
+    session.handle_message(message)
+    session.handle_message(message)
+
+    assert session.transport.errors == []
+    assert [active.subscription_id for active in session.subscriptions] == ["sub_2", "sub_1", "sub_3"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from collections.abc import Mapping
-from collections.abc import Sized
+from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import replace
 from itertools import count
@@ -59,6 +59,20 @@ def _json_size(value: Any) -> int:
     """Return the UTF-8 size of a value's compact JSON encoding."""
 
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"))
+
+
+def _is_valid_unicode(value: Any) -> bool:
+    """Return whether every string in a decoded JSON value encodes as UTF-8.
+
+    JSON escapes can decode to a lone surrogate, such as ``"\\ud800"``, which
+    cannot be encoded for a size check or a database query.
+    """
+
+    try:
+        json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _field_too_large(field_name: str, limit: int, unit: str) -> tuple[str, str, dict[str, Any]]:
@@ -121,8 +135,34 @@ class _BaseSubscriptionSession:
             return _field_too_large("subscription_id", self.max_subscription_id_length, "characters")
         return None
 
-    def _subscribe_message_rejection(self, message: Mapping[str, Any]) -> tuple[str, str, dict[str, Any]] | None:
-        """Return an error when a subscribe message field exceeds its size limit."""
+    def _unsubscribe_request(self, message: Mapping[str, Any]) -> tuple[str | None, tuple[str, str, Any] | None]:
+        """Return the subscription id of an unsubscribe message, or the error that rejects it."""
+
+        subscription_id = message.get("subscription_id")
+        if subscription_id is None:
+            return None, ("invalid_request", "Unsubscribe messages require a subscription_id.", None)
+        try:
+            subscription_id = normalize_subscription_id(subscription_id)
+        except ValueError as exc:
+            return None, ("invalid_request", str(exc), None)
+        rejection = self._subscription_id_rejection(subscription_id)
+        if rejection is not None:
+            return None, rejection
+        return subscription_id, None
+
+    def _subscribe_message_rejection(
+        self,
+        message: Mapping[str, Any] | SubscriptionRequest,
+    ) -> tuple[str, str, Any] | None:
+        """Return an error when a subscribe message holds invalid text or a field exceeds its size limit.
+
+        A field of the wrong type passes here and is rejected when the request is built.
+        """
+
+        if isinstance(message, SubscriptionRequest):
+            return None
+        if not _is_valid_unicode(message):
+            return ("invalid_request", "Messages must not contain unpaired surrogates.", None)
 
         rejection = self._subscription_id_rejection(message.get("subscription_id"))
         if rejection is not None:
@@ -143,21 +183,26 @@ class _BaseSubscriptionSession:
 
         ordering = message.get("ordering")
         if (
-            isinstance(ordering, Sized)
+            isinstance(ordering, Sequence)
+            and not isinstance(ordering, str)
             and self.max_ordering_length is not None
             and len(ordering) > self.max_ordering_length
         ):
             return _field_too_large("ordering", self.max_ordering_length, "entries")
 
         shape = message.get("shape")
-        if shape and self.max_shape_bytes is not None and _json_size(shape) > self.max_shape_bytes:
+        if isinstance(shape, Mapping) and self.max_shape_bytes is not None and _json_size(shape) > self.max_shape_bytes:
             return _field_too_large("shape", self.max_shape_bytes, "bytes")
         return None
 
     def _next_subscription_id(self) -> str:
+        """Return a generated id. The default ids skip any id a client already chose."""
+
         if self._subscription_id_factory is not None:
             return self._subscription_id_factory()
-        return f"sub_{next(self._counter)}"
+        while (subscription_id := f"sub_{next(self._counter)}") in self._subscriptions:
+            pass
+        return subscription_id
 
     def _subscription_queryset(
         self,
@@ -195,10 +240,10 @@ class _BaseSubscriptionSession:
         pks = self._subscription_queryset(registration, request).values_list("pk", flat=True)
         return len(pks[: self.max_member_pks + 1]) > self.max_member_pks
 
-    def _connection_rejection(self, requested: SubscriptionRequest) -> tuple[str, str] | None:
+    def _connection_rejection(self, subscription_id: str) -> tuple[str, str] | None:
         """Return an error code and message when connection state forbids the subscription."""
 
-        if requested.subscription_id is not None and requested.subscription_id in self._subscriptions:
+        if subscription_id in self._subscriptions:
             return ("duplicate_subscription", "Subscription id is already active on this connection.")
         if self.max_subscriptions is not None and len(self._subscriptions) >= self.max_subscriptions:
             return ("subscription_limit_exceeded", "Connection has too many active subscriptions.")
@@ -317,16 +362,7 @@ class SubscriptionSession(_BaseSubscriptionSession):
         if op == "subscribe":
             return self.subscribe(message)
         if op == "unsubscribe":
-            subscription_id = message.get("subscription_id")
-            if subscription_id is None:
-                self._send_error("invalid_request", "Unsubscribe messages require a subscription_id.")
-                return None
-            try:
-                subscription_id = normalize_subscription_id(subscription_id)
-            except ValueError as exc:
-                self._send_error("invalid_request", str(exc))
-                return None
-            rejection = self._subscription_id_rejection(subscription_id)
+            subscription_id, rejection = self._unsubscribe_request(message)
             if rejection is not None:
                 code, text, details = rejection
                 self._send_error(code, text, details=details)
@@ -339,12 +375,11 @@ class SubscriptionSession(_BaseSubscriptionSession):
     def subscribe(self, message: Mapping[str, Any] | SubscriptionRequest) -> SubscriptionRequest | None:
         """Register a subscription and send its acknowledgement."""
 
-        if not isinstance(message, SubscriptionRequest):
-            rejection = self._subscribe_message_rejection(message)
-            if rejection is not None:
-                code, text, details = rejection
-                self._send_error(code, text, details=details)
-                return None
+        rejection = self._subscribe_message_rejection(message)
+        if rejection is not None:
+            code, text, details = rejection
+            self._send_error(code, text, details=details)
+            return None
 
         try:
             requested = self._coerce_subscription_request(message)
@@ -353,7 +388,8 @@ class SubscriptionSession(_BaseSubscriptionSession):
             self._send_error("invalid_request", str(exc))
             return None
 
-        rejection = self._connection_rejection(requested)
+        subscription_id = requested.subscription_id or self._next_subscription_id()
+        rejection = self._connection_rejection(subscription_id)
         if rejection is not None:
             self._send_error(*rejection)
             return None
@@ -367,7 +403,6 @@ class SubscriptionSession(_BaseSubscriptionSession):
             self._send_error("invalid_cursor", "Subscription cursor is newer than the outbox.")
             return None
 
-        subscription_id = requested.subscription_id or self._next_subscription_id()
         acknowledged = replace(requested, subscription_id=subscription_id, cursor=snapshot_cursor)
 
         try:
@@ -541,16 +576,7 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
         if op == "subscribe":
             return await self.subscribe(message)
         if op == "unsubscribe":
-            subscription_id = message.get("subscription_id")
-            if subscription_id is None:
-                await self.transport.send_error("invalid_request", "Unsubscribe messages require a subscription_id.")
-                return None
-            try:
-                subscription_id = normalize_subscription_id(subscription_id)
-            except ValueError as exc:
-                await self.transport.send_error("invalid_request", str(exc))
-                return None
-            rejection = self._subscription_id_rejection(subscription_id)
+            subscription_id, rejection = self._unsubscribe_request(message)
             if rejection is not None:
                 code, text, details = rejection
                 await self.transport.send_error(code, text, details=details)
@@ -563,12 +589,11 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
     async def subscribe(self, message: Mapping[str, Any] | SubscriptionRequest) -> SubscriptionRequest | None:
         """Register a subscription and send its acknowledgement."""
 
-        if not isinstance(message, SubscriptionRequest):
-            rejection = self._subscribe_message_rejection(message)
-            if rejection is not None:
-                code, text, details = rejection
-                await self.transport.send_error(code, text, details=details)
-                return None
+        rejection = self._subscribe_message_rejection(message)
+        if rejection is not None:
+            code, text, details = rejection
+            await self.transport.send_error(code, text, details=details)
+            return None
 
         try:
             requested = self._coerce_subscription_request(message)
@@ -577,7 +602,8 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
             await self.transport.send_error("invalid_request", str(exc))
             return None
 
-        rejection = self._connection_rejection(requested)
+        subscription_id = requested.subscription_id or self._next_subscription_id()
+        rejection = self._connection_rejection(subscription_id)
         if rejection is not None:
             await self.transport.send_error(*rejection)
             return None
@@ -591,7 +617,6 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
             await self.transport.send_error("invalid_cursor", "Subscription cursor is newer than the outbox.")
             return None
 
-        subscription_id = requested.subscription_id or self._next_subscription_id()
         acknowledged = replace(requested, subscription_id=subscription_id, cursor=snapshot_cursor)
 
         try:

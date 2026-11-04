@@ -46,6 +46,12 @@ Entry conventions, including which commit types earn an entry, are in
   with an unhandled exception. A string `ordering` is now rejected rather than
   split into single characters, and a fractional `cursor` is rejected rather
   than truncated. Integer `subscription_id` values are echoed back as strings.
+- A subscribe message holding an unpaired surrogate, such as `"\ud800"` in a
+  filter value, now gets an `invalid_request` error. Before, the session raised
+  `UnicodeEncodeError` when it measured the value or queried with it.
+- A generated subscription id no longer replaces an active subscription whose
+  client-chosen id has the same value, such as `sub_2`. The generator skips ids
+  that are already active.
 
 ## [0.1.0a0] - 2026-09-02
 
