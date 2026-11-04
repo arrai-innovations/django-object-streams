@@ -71,6 +71,7 @@ import pgtrigger
 from django.core.exceptions import FieldDoesNotExist
 from django.db import models
 
+from object_streams.events import TRANSACTION_ID_KEY
 from object_streams.postgres import DEFAULT_NOTIFY_CHANNEL
 from object_streams.postgres import validate_notify_channel
 
@@ -138,7 +139,7 @@ _FUNC = """
         changed,
         NULL,
         NULL,
-        jsonb_build_object('transaction_id', pg_current_xact_id()::text),
+        jsonb_build_object(__TRANSACTION_ID_KEY__, pg_current_xact_id()::text),
         now()
     ) RETURNING id INTO event_id;
 
@@ -228,7 +229,7 @@ _MAPPED_FUNC = """
             changed,
             NULL,
             NULL,
-            jsonb_build_object('transaction_id', pg_current_xact_id()::text),
+            jsonb_build_object(__TRANSACTION_ID_KEY__, pg_current_xact_id()::text),
             now()
         ) RETURNING id INTO event_id;
 
@@ -434,6 +435,7 @@ class ObjectStreamTrigger(pgtrigger.Trigger):
             (_MAPPED_FUNC if self.is_mapped else _FUNC)
             .replace("__FACET__", _quote(self.facet))
             .replace("__CHANNEL_SETTING__", NOTIFY_CHANNEL_SETTING)
+            .replace("__TRANSACTION_ID_KEY__", _quote(TRANSACTION_ID_KEY))
             .replace("__DEFAULT_CHANNEL__", _quote(self.channel or DEFAULT_NOTIFY_CHANNEL))
         )
 
