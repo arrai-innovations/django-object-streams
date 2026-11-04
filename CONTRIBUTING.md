@@ -3,6 +3,25 @@
 The root [README](README.md) explains how to install the workspace and run its
 checks and tests.
 
+## Make a change
+
+These steps follow one change from a working checkout to a pull request. Each
+step links to the rules that it relies on.
+
+1. Set up the workspace. Follow [Development](README.md#development) in the
+   root README to run `just bootstrap` and create the test database. Run
+   `just test` to confirm that the suite passes before you change anything.
+2. Write a test that fails without the change. Tests live under `tests/` and
+   run with `just test <path>`.
+3. Make the change until the test passes. Run `just fix`, then `just check`.
+   Run `just coverage` to confirm that the suite stays above the 80 percent
+   floor that CI enforces.
+4. Add a changelog entry when the change needs one. See
+   [Changelog](#changelog).
+5. Commit, then open the pull request. Follow
+   [Commit messages](#commit-messages) and
+   [Pull request titles](#pull-request-titles).
+
 ## Issue and pull request titles
 
 A title should identify the affected behavior and the intended outcome. It
@@ -50,6 +69,11 @@ package, or concern. A scope is optional.
 The text after the prefix must describe the concrete outcome, not merely
 classify the work. The title should account for the whole branch.
 
+Mark a breaking change with `!` before the colon, as in
+`feat(registry)!: require a visibility policy for every registration`. A change
+is breaking when an integrator must change code, configuration, or data to keep
+a project working after upgrading.
+
 Examples:
 
 - `feat(outbox): add replayable event cursor`
@@ -57,6 +81,24 @@ Examples:
 - `docs(subscriptions): explain filter membership semantics`
 
 Avoid titles such as `fix: server changes` or `chore: updates`.
+
+## Dependency audit fixes
+
+Keep a dependency audit fix out of a pull request whose focus is other work.
+Land it on its own, in a pull request whose focus is that fix.
+
+An audit fix edits `uv.lock`, which most branches share. A pull request that
+carries one conflicts with every other branch that touches the lockfile. Those
+conflicts grow while the pull request waits for review and while other work
+lands on `main`.
+
+Run the audit from the repository root. It reads `uv.lock`, so it reports the
+versions the workspace resolves rather than the lower bounds in
+`pyproject.toml`:
+
+```bash
+uvx pysentry-rs . --compact --color never
+```
 
 ## Commit messages
 
