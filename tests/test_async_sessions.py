@@ -787,3 +787,21 @@ def test_async_object_pk_the_model_cannot_parse_is_an_invalid_request():
             "details": None,
         }
     ]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_async_object_pk_in_a_non_canonical_form_receives_live_events():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    note = Note.objects.create(title="Open")
+    session = make_session(registry)
+
+    subscription = async_to_sync(session.handle_message)(
+        {"op": "subscribe", "kind": "object", "model": "testapp.Note", "pk": f"0{note.pk}"}
+    )
+    row = create_outbox_event(StreamEvent(subject=ObjectRef.from_instance(note)))
+    live = async_to_sync(session.publish)(row)
+
+    assert session.transport.errors == []
+    assert subscription.pk == str(note.pk)
+    assert len(live) == 1

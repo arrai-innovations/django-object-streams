@@ -58,6 +58,10 @@ Entry conventions, including which commit types earn an entry, are in
 - An object subscription whose `pk` the model cannot parse, such as `"abc"` for
   an integer primary key, now gets an `invalid_request` error. Before, the
   session raised `ValueError` from the membership query.
+- An object subscription whose `pk` is a valid key in another text form, such
+  as `"02"` or `" 2"` for primary key 2, now receives replay and live events.
+  Before, it was acknowledged but received nothing. The session converts the
+  `pk` to the model's canonical form, and `subscribed` echoes that form.
 - A generated subscription id no longer replaces an active subscription whose
   client-chosen id has the same value, such as `sub_2`. The generator skips ids
   that are already active.

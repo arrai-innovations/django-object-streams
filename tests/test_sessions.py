@@ -1118,3 +1118,23 @@ def test_an_object_pk_the_model_cannot_parse_is_an_invalid_request():
             "details": None,
         }
     ]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("pk_form", ["0{pk}", " {pk}", "+{pk}", "{pk} "])
+def test_an_object_pk_in_a_non_canonical_form_receives_replay_and_live_events(pk_form):
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    note = Note.objects.create(title="Open")
+    create_outbox_event(StreamEvent(subject=ObjectRef.from_instance(note)))
+    session = make_session(registry)
+
+    subscription = session.handle_message(
+        {"op": "subscribe", "kind": "object", "model": "testapp.Note", "pk": pk_form.format(pk=note.pk), "cursor": 0}
+    )
+    live = session.publish(create_outbox_event(StreamEvent(subject=ObjectRef.from_instance(note))))
+
+    assert session.transport.errors == []
+    assert subscription.pk == str(note.pk)
+    assert len(session.transport.events) == len(["replayed", "live"])
+    assert len(live) == 1

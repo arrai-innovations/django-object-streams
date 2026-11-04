@@ -130,16 +130,26 @@ class _BaseSubscriptionSession:
             return message
         return SubscriptionRequest.from_message(message)
 
-    def _validate_pk(self, registration: ObjectStreamRegistration, request: SubscriptionRequest) -> None:
-        """Raise ``ValueError`` when an object subscription's pk cannot identify a row of the model."""
+    def _canonical_request(
+        self,
+        registration: ObjectStreamRegistration,
+        request: SubscriptionRequest,
+    ) -> SubscriptionRequest:
+        """Return the request with an object subscription's pk in the model's canonical text form.
+
+        Events, replay, and transport groups match the subject pk as text, so ``"02"``
+        becomes ``"2"`` for an integer primary key. Raise ``ValueError`` when the
+        model cannot parse the pk.
+        """
 
         if request.kind != SubscriptionKind.OBJECT:
-            return
+            return request
         try:
-            registration.model._meta.pk.to_python(request.pk)
+            pk = registration.model._meta.pk.to_python(request.pk)
         except ValidationError:
             msg = f"Subscription pk is not a valid primary key for {registration.model_label}."
             raise ValueError(msg) from None
+        return replace(request, pk=str(pk))
 
     def _subscription_id_rejection(self, subscription_id: Any) -> tuple[str, str, dict[str, Any]] | None:
         if not _is_scalar_id(subscription_id) or self.max_subscription_id_length is None:
@@ -397,7 +407,7 @@ class SubscriptionSession(_BaseSubscriptionSession):
         try:
             requested = self._coerce_subscription_request(message)
             registration = self.registry.get(requested.model)
-            self._validate_pk(registration, requested)
+            requested = self._canonical_request(registration, requested)
         except (LookupError, NotRegistered, ValueError) as exc:
             self._send_error("invalid_request", str(exc))
             return None
@@ -612,7 +622,7 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
         try:
             requested = self._coerce_subscription_request(message)
             registration = self.registry.get(requested.model)
-            self._validate_pk(registration, requested)
+            requested = self._canonical_request(registration, requested)
         except (LookupError, NotRegistered, ValueError) as exc:
             await self.transport.send_error("invalid_request", str(exc))
             return None
