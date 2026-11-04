@@ -782,12 +782,35 @@ def test_consumer_message_size_limit_set_to_none_is_disabled():
 
 
 @pytest.mark.django_db(transaction=True)
+def test_consumer_answers_deeply_nested_json_and_stays_open():
+    # Python 3.14 parses nesting that fits the default size limit, so disable the limit to reach RecursionError.
+    registry = ObjectStreamRegistry()
+    communicator = WebsocketCommunicator(UnlimitedMessageConsumer.as_asgi(registry=registry), "/object-streams/")
+    communicator.scope["user"] = None
+
+    async def run_test():
+        await connect(communicator)
+        await communicator.send_to(text_data="[" * 1000000 + "]" * 1000000)
+
+        payload = await communicator.receive_json_from()
+        assert payload["type"] == "error"
+        assert payload["code"] == "invalid_request"
+        assert payload["message"] == "Messages must be valid JSON."
+
+        await communicator.send_json_to({"op": "unsubscribe", "subscription_id": "sub_1"})
+        payload = await communicator.receive_json_from()
+        assert payload["code"] == "not_subscribed"
+        await communicator.disconnect()
+
+    async_to_sync(run_test)()
+
+
+@pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize(
     ("frame", "message"),
     [
         ({"bytes_data": b'{"op": "subscribe"}'}, "Messages must be JSON text frames."),
         ({"text_data": "{not json"}, "Messages must be valid JSON."),
-        ({"text_data": "[" * 20000 + "]" * 20000}, "Messages must be valid JSON."),
         ({"text_data": json.dumps({"op": "subscribe", "model": "testapp.Note", "filter": 5})}, None),
     ],
 )
