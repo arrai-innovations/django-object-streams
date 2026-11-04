@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from collections.abc import Mapping
+from collections.abc import Sized
 from dataclasses import dataclass
 from dataclasses import replace
 from itertools import count
@@ -52,6 +54,20 @@ class ActiveSubscription:
         return self.request.subscription_id
 
 
+def _json_size(value: Any) -> int:
+    """Return the UTF-8 size of a value's compact JSON encoding."""
+
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"))
+
+
+def _field_too_large(field_name: str, limit: int, unit: str) -> tuple[str, str, dict[str, Any]]:
+    return (
+        "field_too_large",
+        f"Field {field_name!r} exceeds {limit} {unit}.",
+        {"field": field_name, "limit": limit},
+    )
+
+
 class _BaseSubscriptionSession:
     def __init__(
         self,
@@ -64,6 +80,12 @@ class _BaseSubscriptionSession:
         replay_limit: int = 1000,
         max_subscriptions: int | None = 100,
         max_member_pks: int | None = 10000,
+        max_subscription_id_length: int | None = 128,
+        max_pk_length: int | None = 255,
+        max_filter_keys: int | None = 32,
+        max_filter_value_bytes: int | None = 4096,
+        max_ordering_length: int | None = 8,
+        max_shape_bytes: int | None = 4096,
     ):
         self.user = user
         self.transport = transport
@@ -72,6 +94,12 @@ class _BaseSubscriptionSession:
         self.replay_limit = replay_limit
         self.max_subscriptions = max_subscriptions
         self.max_member_pks = max_member_pks
+        self.max_subscription_id_length = max_subscription_id_length
+        self.max_pk_length = max_pk_length
+        self.max_filter_keys = max_filter_keys
+        self.max_filter_value_bytes = max_filter_value_bytes
+        self.max_ordering_length = max_ordering_length
+        self.max_shape_bytes = max_shape_bytes
         self._subscriptions: dict[str, ActiveSubscription] = {}
         self._counter = count(1)
         self._subscription_id_factory = subscription_id_factory
@@ -84,6 +112,46 @@ class _BaseSubscriptionSession:
         if isinstance(message, SubscriptionRequest):
             return message
         return SubscriptionRequest.from_message(message)
+
+    def _subscription_id_rejection(self, subscription_id: Any) -> tuple[str, str, dict[str, Any]] | None:
+        if subscription_id is None or self.max_subscription_id_length is None:
+            return None
+        if len(str(subscription_id)) > self.max_subscription_id_length:
+            return _field_too_large("subscription_id", self.max_subscription_id_length, "characters")
+        return None
+
+    def _subscribe_message_rejection(self, message: Mapping[str, Any]) -> tuple[str, str, dict[str, Any]] | None:
+        """Return an error when a subscribe message field exceeds its size limit."""
+
+        rejection = self._subscription_id_rejection(message.get("subscription_id"))
+        if rejection is not None:
+            return rejection
+
+        pk = message.get("pk")
+        if pk is not None and self.max_pk_length is not None and len(str(pk)) > self.max_pk_length:
+            return _field_too_large("pk", self.max_pk_length, "characters")
+
+        filters = message.get("filter") or message.get("filters")
+        if isinstance(filters, Mapping):
+            if self.max_filter_keys is not None and len(filters) > self.max_filter_keys:
+                return _field_too_large("filter", self.max_filter_keys, "keys")
+            if self.max_filter_value_bytes is not None and any(
+                _json_size(value) > self.max_filter_value_bytes for value in filters.values()
+            ):
+                return _field_too_large("filter", self.max_filter_value_bytes, "bytes per value")
+
+        ordering = message.get("ordering")
+        if (
+            isinstance(ordering, Sized)
+            and self.max_ordering_length is not None
+            and len(ordering) > self.max_ordering_length
+        ):
+            return _field_too_large("ordering", self.max_ordering_length, "entries")
+
+        shape = message.get("shape")
+        if shape and self.max_shape_bytes is not None and _json_size(shape) > self.max_shape_bytes:
+            return _field_too_large("shape", self.max_shape_bytes, "bytes")
+        return None
 
     def _next_subscription_id(self) -> str:
         if self._subscription_id_factory is not None:
@@ -252,6 +320,11 @@ class SubscriptionSession(_BaseSubscriptionSession):
             if subscription_id is None:
                 self._send_error("invalid_request", "Unsubscribe messages require a subscription_id.")
                 return None
+            rejection = self._subscription_id_rejection(subscription_id)
+            if rejection is not None:
+                code, text, details = rejection
+                self._send_error(code, text, details=details)
+                return None
             return self.unsubscribe(str(subscription_id))
 
         self._send_error("invalid_request", "Messages require a supported op.")
@@ -259,6 +332,13 @@ class SubscriptionSession(_BaseSubscriptionSession):
 
     def subscribe(self, message: Mapping[str, Any] | SubscriptionRequest) -> SubscriptionRequest | None:
         """Register a subscription and send its acknowledgement."""
+
+        if not isinstance(message, SubscriptionRequest):
+            rejection = self._subscribe_message_rejection(message)
+            if rejection is not None:
+                code, text, details = rejection
+                self._send_error(code, text, details=details)
+                return None
 
         try:
             requested = self._coerce_subscription_request(message)
@@ -459,6 +539,11 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
             if subscription_id is None:
                 await self.transport.send_error("invalid_request", "Unsubscribe messages require a subscription_id.")
                 return None
+            rejection = self._subscription_id_rejection(subscription_id)
+            if rejection is not None:
+                code, text, details = rejection
+                await self.transport.send_error(code, text, details=details)
+                return None
             return await self.unsubscribe(str(subscription_id))
 
         await self.transport.send_error("invalid_request", "Messages require a supported op.")
@@ -466,6 +551,13 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
 
     async def subscribe(self, message: Mapping[str, Any] | SubscriptionRequest) -> SubscriptionRequest | None:
         """Register a subscription and send its acknowledgement."""
+
+        if not isinstance(message, SubscriptionRequest):
+            rejection = self._subscribe_message_rejection(message)
+            if rejection is not None:
+                code, text, details = rejection
+                await self.transport.send_error(code, text, details=details)
+                return None
 
         try:
             requested = self._coerce_subscription_request(message)

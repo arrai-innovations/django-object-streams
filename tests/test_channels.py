@@ -663,3 +663,116 @@ def test_replacing_subscription_groups_discards_the_previous_membership():
 
     assert consumer._group_ref_counts == {}
     assert consumer._subscription_groups == {}
+
+
+class SmallMessageConsumer(ObjectStreamConsumer):
+    max_message_bytes = 128
+    max_pk_length = 4
+
+
+def make_small_message_communicator(registry):
+    communicator = WebsocketCommunicator(
+        SmallMessageConsumer.as_asgi(registry=registry),
+        "/object-streams/",
+    )
+    communicator.scope["user"] = None
+    return communicator
+
+
+@pytest.mark.django_db(transaction=True)
+def test_consumer_rejects_an_oversized_message_and_keeps_the_connection_open():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    communicator = make_small_message_communicator(registry)
+
+    async def run_test():
+        await connect(communicator)
+        await communicator.send_to(text_data="x" * 129)
+
+        payload = await communicator.receive_json_from()
+        assert payload == {
+            "type": "error",
+            "code": "message_too_large",
+            "message": "Messages must not exceed 128 bytes.",
+            "details": {"limit": 128},
+        }
+
+        await communicator.send_json_to({"op": "subscribe", "kind": "model", "model": "testapp.Note"})
+        payload = await communicator.receive_json_from()
+        assert payload["type"] == "subscribed"
+        await communicator.disconnect()
+
+    async_to_sync(run_test)()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_consumer_measures_message_size_in_utf8_bytes():
+    communicator = make_small_message_communicator(ObjectStreamRegistry())
+
+    async def run_test():
+        await connect(communicator)
+        # 100 characters, 200 bytes.
+        await communicator.send_to(text_data="\u00e9" * 100)
+
+        payload = await communicator.receive_json_from()
+        assert payload["code"] == "message_too_large"
+        await communicator.disconnect()
+
+    async_to_sync(run_test)()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_consumer_rejects_an_oversized_binary_frame():
+    communicator = make_small_message_communicator(ObjectStreamRegistry())
+
+    async def run_test():
+        await connect(communicator)
+        await communicator.send_to(bytes_data=b"x" * 129)
+
+        payload = await communicator.receive_json_from()
+        assert payload["code"] == "message_too_large"
+        await communicator.disconnect()
+
+    async_to_sync(run_test)()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_consumer_passes_field_limits_to_the_session():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    communicator = make_small_message_communicator(registry)
+
+    async def run_test():
+        await connect(communicator)
+        await communicator.send_json_to({"op": "subscribe", "kind": "object", "model": "testapp.Note", "pk": "12345"})
+
+        payload = await communicator.receive_json_from()
+        assert payload["code"] == "field_too_large"
+        assert payload["details"] == {"field": "pk", "limit": 4}
+        await communicator.disconnect()
+
+    async_to_sync(run_test)()
+
+
+class UnlimitedMessageConsumer(ObjectStreamConsumer):
+    max_message_bytes = None
+
+
+@pytest.mark.django_db(transaction=True)
+def test_consumer_message_size_limit_set_to_none_is_disabled():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    communicator = WebsocketCommunicator(UnlimitedMessageConsumer.as_asgi(registry=registry), "/object-streams/")
+    communicator.scope["user"] = None
+
+    async def run_test():
+        await connect(communicator)
+        await communicator.send_json_to(
+            {"op": "subscribe", "kind": "model", "model": "testapp.Note", "padding": "x" * 100000}
+        )
+
+        payload = await communicator.receive_json_from()
+        assert payload["type"] == "subscribed"
+        await communicator.disconnect()
+
+    async_to_sync(run_test)()

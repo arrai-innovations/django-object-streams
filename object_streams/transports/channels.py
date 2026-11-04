@@ -111,6 +111,16 @@ def _get_outbox_event(event_id: Any) -> ObjectStreamEvent:
     ).get(pk=int(event_id))
 
 
+def _frame_size(text_data: str | None, bytes_data: bytes | None, limit: int) -> int:
+    """Return a frame's size in bytes, without encoding text that is already too long."""
+
+    if text_data is None:
+        return len(bytes_data or b"")
+    if len(text_data) > limit:
+        return len(text_data)
+    return len(text_data.encode("utf-8"))
+
+
 class ObjectStreamConsumer(AsyncJsonWebsocketConsumer):
     """Minimal Channels consumer for JSON object stream subscriptions."""
 
@@ -120,6 +130,13 @@ class ObjectStreamConsumer(AsyncJsonWebsocketConsumer):
     replay_limit = 1000
     max_subscriptions: int | None = 100
     max_member_pks: int | None = 10000
+    max_message_bytes: int | None = 65536
+    max_subscription_id_length: int | None = 128
+    max_pk_length: int | None = 255
+    max_filter_keys: int | None = 32
+    max_filter_value_bytes: int | None = 4096
+    max_ordering_length: int | None = 8
+    max_shape_bytes: int | None = 4096
 
     def __init__(
         self,
@@ -147,11 +164,30 @@ class ObjectStreamConsumer(AsyncJsonWebsocketConsumer):
             replay_limit=self.replay_limit,
             max_subscriptions=self.max_subscriptions,
             max_member_pks=self.max_member_pks,
+            max_subscription_id_length=self.max_subscription_id_length,
+            max_pk_length=self.max_pk_length,
+            max_filter_keys=self.max_filter_keys,
+            max_filter_value_bytes=self.max_filter_value_bytes,
+            max_ordering_length=self.max_ordering_length,
+            max_shape_bytes=self.max_shape_bytes,
         )
         await self.accept()
 
     async def disconnect(self, code: int) -> None:
         await self._discard_all_groups()
+
+    async def receive(self, text_data: str | None = None, bytes_data: bytes | None = None, **kwargs: Any) -> None:
+        """Reject an oversized frame before it is decoded as JSON."""
+
+        limit = self.max_message_bytes
+        if limit is not None and _frame_size(text_data, bytes_data, limit) > limit:
+            await self.send_error(
+                "message_too_large",
+                f"Messages must not exceed {limit} bytes.",
+                details={"limit": limit},
+            )
+            return
+        await super().receive(text_data=text_data, bytes_data=bytes_data, **kwargs)
 
     async def receive_json(self, content: Any, **kwargs: Any) -> None:
         if not isinstance(content, Mapping):

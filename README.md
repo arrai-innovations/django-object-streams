@@ -411,6 +411,8 @@ carries structured data, such as FilterSet validation errors.
 | `code` | Cause |
 |---|---|
 | `invalid_request` | Unsupported `op`, missing `model`, missing `subscription_id`, or a non-object JSON message. |
+| `message_too_large` | The raw message is larger than `max_message_bytes`. `details` carries `limit`. |
+| `field_too_large` | A field is larger than its limit. `details` carries `field` and `limit`. |
 | `invalid_cursor` | The requested cursor is newer than the outbox. |
 | `invalid_filter` | FilterSet validation failed. `details` carries the errors. |
 | `not_found` | An object subscription target does not exist or is not visible. |
@@ -529,12 +531,37 @@ The consumer bounds this with three class attributes:
 | `max_member_pks` | `10000` | Objects one subscription may match. `None` disables the limit. |
 | `replay_limit` | `1000` | Object replay events sent before falling back to `resync_required`. |
 
+Further class attributes bound the size of each incoming message and its
+fields. A message over a limit gets an `error` response and is otherwise
+ignored. `None` disables a limit.
+
+| Attribute | Default | Effect |
+|---|---|---|
+| `max_message_bytes` | `65536` | Size of the raw WebSocket frame in UTF-8 bytes, checked before JSON decoding. Rejected with `message_too_large`. |
+| `max_subscription_id_length` | `128` | Characters in `subscription_id`, on `subscribe` and `unsubscribe`. |
+| `max_pk_length` | `255` | Characters in `pk`. |
+| `max_filter_keys` | `32` | Keys in `filter` or `filters`. |
+| `max_filter_value_bytes` | `4096` | Size of each filter value, measured as compact JSON in UTF-8 bytes. |
+| `max_ordering_length` | `8` | Entries in `ordering`. |
+| `max_shape_bytes` | `4096` | Size of `shape`, measured as compact JSON in UTF-8 bytes. |
+
+The field limits are rejected with `field_too_large`. A field limit rejects the
+whole message, so no subscription is created.
+
+An oversized message does not close the connection. By the time the consumer
+sees the frame, the ASGI server has already read it into memory, so closing
+saves nothing for that frame, and skipping the JSON decode is the costly part
+that the limit avoids. The ASGI server's own frame limit still applies above
+this one. Uvicorn, for example, closes the socket for a frame larger than its
+`--ws-max-size`. Keep `max_message_bytes` below your server's limit.
+
 Subclass the consumer to change them:
 
 ```python
 class WideObjectStreamConsumer(ObjectStreamConsumer):
     max_subscriptions = 500
     max_member_pks = 50000
+    max_filter_value_bytes = 16384
 ```
 
 These are backstops, not a substitute for authentication. Raise them

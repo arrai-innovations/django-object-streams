@@ -9,6 +9,15 @@ Entry conventions, including which commit types earn an entry, are in
 
 ## [Unreleased]
 
+### Added
+
+- Size limits for incoming WebSocket messages. `ObjectStreamConsumer` rejects a
+  frame larger than `max_message_bytes` before decoding it, with a
+  `message_too_large` error. It rejects a `subscription_id`, `pk`, `filter`,
+  `ordering`, or `shape` over its limit with a `field_too_large` error. Each
+  limit is a consumer class attribute, and `None` disables it. The connection
+  stays open after a rejected message.
+
 ## [0.1.0a0] - 2026-09-02
 
 ### Added

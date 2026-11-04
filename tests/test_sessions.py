@@ -893,3 +893,107 @@ def test_subscription_at_the_member_limit_is_accepted():
     assert subscription is not None
     assert session.transport.errors == []
     assert len(session.subscriptions[0].member_pks) == TEST_MAX_MEMBER_PKS
+
+
+TEST_FIELD_LIMITS = {
+    "max_subscription_id_length": 8,
+    "max_pk_length": 4,
+    "max_filter_keys": 2,
+    "max_filter_value_bytes": 8,
+    "max_ordering_length": 2,
+    "max_shape_bytes": 16,
+}
+OVERSIZED_SUBSCRIBE_FIELDS = [
+    pytest.param({"subscription_id": "s" * 9}, "subscription_id", 8, id="subscription_id"),
+    pytest.param({"kind": "object", "pk": "12345"}, "pk", 4, id="pk"),
+    pytest.param({"kind": "filter", "filter": {"a": 1, "b": 2, "c": 3}}, "filter", 2, id="filter-keys"),
+    pytest.param({"kind": "filter", "filters": {"a": 1, "b": 2, "c": 3}}, "filter", 2, id="filters-alias-keys"),
+    pytest.param({"kind": "filter", "filter": {"title": "x" * 7}}, "filter", 8, id="filter-value"),
+    pytest.param({"kind": "filter", "filter": {"title": "\u00e9" * 4}}, "filter", 8, id="filter-value-utf8"),
+    pytest.param({"kind": "model", "ordering": ["a", "b", "c"]}, "ordering", 2, id="ordering"),
+    pytest.param({"kind": "model", "shape": {"fields": ["title", "body"]}}, "shape", 16, id="shape"),
+]
+
+
+def make_limited_session(registry, **limits):
+    return SubscriptionSession(
+        user=None,
+        transport=RecordingTransport(),
+        registry=registry,
+        **{**TEST_FIELD_LIMITS, **limits},
+    )
+
+
+@pytest.mark.parametrize(("fields", "field_name", "limit"), OVERSIZED_SUBSCRIBE_FIELDS)
+def test_subscribe_field_over_its_limit_is_rejected(fields, field_name, limit):
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    session = make_limited_session(registry)
+
+    message = {"op": "subscribe", "kind": "model", "model": "testapp.Note", **fields}
+    assert session.handle_message(message) is None
+
+    assert session.subscriptions == ()
+    assert session.transport.subscribed == []
+    [error] = session.transport.errors
+    assert error["code"] == "field_too_large"
+    assert error["details"] == {"field": field_name, "limit": limit}
+
+
+def test_unsubscribe_with_an_oversized_subscription_id_is_rejected():
+    session = make_limited_session(ObjectStreamRegistry())
+
+    assert session.handle_message({"op": "unsubscribe", "subscription_id": "s" * 9}) is None
+
+    assert session.transport.unsubscribed == []
+    assert session.transport.errors == [
+        {
+            "code": "field_too_large",
+            "message": "Field 'subscription_id' exceeds 8 characters.",
+            "details": {"field": "subscription_id", "limit": 8},
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_subscribe_fields_at_their_limits_are_accepted():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    session = make_limited_session(registry)
+
+    subscription = session.handle_message(
+        {
+            "op": "subscribe",
+            "kind": "filter",
+            "model": "testapp.Note",
+            "subscription_id": "s" * 8,
+            "filter": {"title": "Open", "id": 1},
+            "ordering": ["title", "id"],
+            "shape": {"f": "abcdefgh"},
+        }
+    )
+
+    assert session.transport.errors == []
+    assert subscription.subscription_id == "s" * 8
+
+
+@pytest.mark.django_db
+def test_field_limits_set_to_none_are_disabled():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    session = make_limited_session(registry, **dict.fromkeys(TEST_FIELD_LIMITS))
+
+    subscription = session.handle_message(
+        {
+            "op": "subscribe",
+            "kind": "filter",
+            "model": "testapp.Note",
+            "subscription_id": "s" * 200,
+            "filter": {"title": "x" * 5000},
+            "ordering": ["title"] * 20,
+            "shape": {"fields": ["title"] * 1000},
+        }
+    )
+
+    assert session.transport.errors == []
+    assert subscription is not None
