@@ -191,7 +191,7 @@ def test_enqueue_source_events_records_the_callers_transaction_with_one_query():
 
 
 @pytest.mark.django_db(transaction=True)
-def test_enqueue_source_events_outside_a_transaction_records_each_write():
+def test_enqueue_source_events_outside_a_transaction_writes_one_transaction():
     registry = two_subject_registry()
     note = Note.objects.create(title="Draft")
 
@@ -199,8 +199,22 @@ def test_enqueue_source_events_outside_a_transaction_records_each_write():
 
     rows = list(ObjectStreamEvent.objects.order_by("id"))
     assert len(rows) == SUBJECTS_PER_NOTE
-    assert len({row.metadata["transaction_id"] for row in rows}) == len(rows)
+    assert len({row.metadata["transaction_id"] for row in rows}) == 1
     assert all(row.cursor is not None for row in rows)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_create_source_events_outside_a_transaction_writes_one_transaction():
+    registry = two_subject_registry()
+    note = Note.objects.create(title="Draft")
+
+    with CaptureQueriesContext(connection) as queries:
+        rows = create_source_events(note, registry=registry, notify=False)
+
+    assert len(rows) == SUBJECTS_PER_NOTE
+    assert len({row.metadata["transaction_id"] for row in rows}) == 1
+    assert all(row.cursor is not None for row in rows)
+    assert sum("pg_current_xact_id" in query["sql"] for query in queries) == 1
 
 
 @pytest.mark.django_db

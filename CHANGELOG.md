@@ -29,6 +29,8 @@ Entry conventions, including which commit types earn an entry, are in
   `enqueue_outbox_events`, which schedules several events with one transaction
   id lookup. The protocol reference documents how a client coalesces the events
   of one transaction.
+- `create_outbox_events`, which writes several events immediately in one
+  transaction with one transaction id lookup.
 
 ### Changed
 
@@ -37,6 +39,10 @@ Entry conventions, including which commit types earn an entry, are in
   helpers read it when they are called, so the value names the caller's
   transaction rather than the one that writes the row after commit. Each call
   costs one extra query. A `transaction_id` passed in `metadata` is replaced.
+- `create_source_events` writes all events of one call in one transaction, so
+  they share one transaction id. Outside an atomic block, `enqueue_source_events`
+  and `enqueue_outbox_events` do the same. Before, each event was written in a
+  transaction of its own.
 
 ### Fixed
 

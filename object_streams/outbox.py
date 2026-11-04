@@ -25,6 +25,7 @@ __all__ = (
     "assign_outbox_cursors",
     "broadcasted_through_cursor",
     "create_outbox_event",
+    "create_outbox_events",
     "current_transaction_id",
     "enqueue_outbox_event",
     "enqueue_outbox_events",
@@ -101,12 +102,32 @@ def create_outbox_event(event: StreamEvent, *, notify: bool = True, using: str |
     replaced.
     """
 
+    [row] = create_outbox_events((event,), notify=notify, using=using)
+    return row
+
+
+def create_outbox_events(
+    events: Iterable[StreamEvent],
+    *,
+    notify: bool = True,
+    using: str | None = None,
+) -> tuple[ObjectStreamEvent, ...]:
+    """Persist stream events immediately in one transaction and return the created rows.
+
+    Every row records the same `transaction_id`, read with one query. Outside an
+    atomic block, the rows are written in a new transaction of their own.
+    """
+
+    events = tuple(events)
+    if not events:
+        return ()
     connection = transaction.get_connection(using=using)
     atomic = nullcontext() if connection.in_atomic_block else transaction.atomic(using=using)
     with atomic:
-        row = _insert_outbox_row(_with_transaction_id(event, current_transaction_id(using=using)), using=using)
-    _finish_outbox_row(row, notify=notify, using=using)
-    return row
+        transaction_id = current_transaction_id(using=using)
+        rows = tuple(_insert_outbox_row(_with_transaction_id(event, transaction_id), using=using) for event in events)
+    _finish_outbox_rows(rows, notify=notify, using=using)
+    return rows
 
 
 def enqueue_outbox_event(event: StreamEvent, *, using: str | None = None, notify: bool = True) -> None:
@@ -120,8 +141,8 @@ def enqueue_outbox_events(events: Iterable[StreamEvent], *, using: str | None = 
 
     The rows are written in a new transaction, so the id of the caller's
     transaction is read now and recorded under `transaction_id`. One query reads
-    it for the whole call. Outside an atomic block, each event is written
-    immediately in its own transaction, the same way `create_outbox_event` writes it.
+    it for the whole call. Outside an atomic block, the events are written
+    immediately, the same way `create_outbox_events` writes them.
     """
 
     events = tuple(events)
@@ -129,8 +150,7 @@ def enqueue_outbox_events(events: Iterable[StreamEvent], *, using: str | None = 
         return
     connection = transaction.get_connection(using=using)
     if not connection.in_atomic_block:
-        for event in events:
-            transaction.on_commit(partial(create_outbox_event, event, notify=notify, using=using), using=using)
+        create_outbox_events(events, notify=notify, using=using)
         return
 
     transaction_id = current_transaction_id(using=using)
@@ -141,7 +161,7 @@ def enqueue_outbox_events(events: Iterable[StreamEvent], *, using: str | None = 
 
 def _write_outbox_row(event: StreamEvent, *, notify: bool, using: str | None) -> ObjectStreamEvent:
     row = _insert_outbox_row(event, using=using)
-    _finish_outbox_row(row, notify=notify, using=using)
+    _finish_outbox_rows((row,), notify=notify, using=using)
     return row
 
 
@@ -172,13 +192,15 @@ def _insert_outbox_row(event: StreamEvent, *, using: str | None) -> ObjectStream
     )
 
 
-def _finish_outbox_row(row: ObjectStreamEvent, *, notify: bool, using: str | None) -> None:
+def _finish_outbox_rows(rows: tuple[ObjectStreamEvent, ...], *, notify: bool, using: str | None) -> None:
     connection = transaction.get_connection(using=using)
     if not connection.in_atomic_block:
         assign_outbox_cursors(using=using)
-        row.refresh_from_db(fields=["cursor"], using=using)
+        for row in rows:
+            row.refresh_from_db(fields=["cursor"], using=using)
     if notify:
-        notify_outbox_event(row.pk, using=using)
+        for row in rows:
+            notify_outbox_event(row.pk, using=using)
 
 
 def _state_manager(using: str | None = None):
