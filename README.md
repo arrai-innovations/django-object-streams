@@ -515,7 +515,7 @@ carries structured data, such as FilterSet validation errors.
 
 | `code` | Cause |
 |---|---|
-| `invalid_request` | Unsupported `op`, missing `model`, missing `subscription_id`, or a non-object JSON message. |
+| `invalid_request` | Unsupported `op`, missing `model`, missing `subscription_id`, a binary frame, invalid JSON, a non-object JSON message, or a field of the wrong type. `filter` and `shape` must be objects, `ordering` a list of strings, `cursor` an integer, and `pk` and `subscription_id` strings or integers. |
 | `message_too_large` | The raw message is larger than `max_message_bytes`. `details` carries `limit`. |
 | `field_too_large` | A field is larger than its limit. `details` carries `field` and `limit`. |
 | `invalid_cursor` | The requested cursor is newer than the outbox. |

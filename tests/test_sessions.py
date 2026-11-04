@@ -998,3 +998,63 @@ def test_field_limits_set_to_none_are_disabled():
 
     assert session.transport.errors == []
     assert subscription is not None
+
+
+WRONGLY_TYPED_SUBSCRIBE_FIELDS = [
+    ({"filter": 5}, "Subscription filter must be a JSON object."),
+    ({"filter": ["status"]}, "Subscription filter must be a JSON object."),
+    ({"ordering": 5}, "Subscription ordering must be a list of strings."),
+    ({"ordering": "-created"}, "Subscription ordering must be a list of strings."),
+    ({"ordering": ["title", 1]}, "Subscription ordering must be a list of strings."),
+    ({"shape": ["fields"]}, "Subscription shape must be a JSON object."),
+    ({"cursor": [1]}, "Subscription cursor must be an integer."),
+    ({"cursor": 1.5}, "Subscription cursor must be an integer."),
+    ({"cursor": True}, "Subscription cursor must be an integer."),
+    ({"pk": {"id": 1}}, "Subscription pk must be a string or an integer."),
+    ({"subscription_id": {"id": 1}}, "Subscription ids must be strings or integers."),
+    ({"subscription_id": ["sub"]}, "Subscription ids must be strings or integers."),
+]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(("fields", "message"), WRONGLY_TYPED_SUBSCRIBE_FIELDS)
+def test_wrongly_typed_subscribe_fields_are_invalid_requests(fields, message):
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    session = make_session(registry)
+
+    subscription = session.handle_message({"op": "subscribe", "kind": "model", "model": "testapp.Note", **fields})
+
+    assert subscription is None
+    assert session.subscriptions == ()
+    assert session.transport.errors == [{"code": "invalid_request", "message": message, "details": None}]
+
+
+@pytest.mark.django_db
+def test_unsubscribe_with_a_wrongly_typed_subscription_id_is_an_invalid_request():
+    registry = ObjectStreamRegistry()
+    session = make_session(registry)
+
+    assert session.handle_message({"op": "unsubscribe", "subscription_id": {"id": 1}}) is None
+    assert session.transport.errors == [
+        {
+            "code": "invalid_request",
+            "message": "Subscription ids must be strings or integers.",
+            "details": None,
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_integer_subscription_ids_are_normalized_to_strings():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    session = make_session(registry)
+
+    subscription = session.handle_message(
+        {"op": "subscribe", "kind": "model", "model": "testapp.Note", "subscription_id": 7}
+    )
+
+    assert subscription.subscription_id == "7"
+    assert session.handle_message({"op": "unsubscribe", "subscription_id": 7}) is True
+    assert session.transport.errors == []

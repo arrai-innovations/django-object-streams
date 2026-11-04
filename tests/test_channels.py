@@ -779,3 +779,35 @@ def test_consumer_message_size_limit_set_to_none_is_disabled():
         await communicator.disconnect()
 
     async_to_sync(run_test)()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    ("frame", "message"),
+    [
+        ({"bytes_data": b'{"op": "subscribe"}'}, "Messages must be JSON text frames."),
+        ({"text_data": "{not json"}, "Messages must be valid JSON."),
+        ({"text_data": "[" * 20000 + "]" * 20000}, "Messages must be valid JSON."),
+        ({"text_data": json.dumps({"op": "subscribe", "model": "testapp.Note", "filter": 5})}, None),
+    ],
+)
+def test_object_stream_consumer_answers_malformed_frames_and_stays_open(frame, message):
+    registry = ObjectStreamRegistry()
+    communicator = make_communicator(registry)
+
+    async def run_test():
+        await connect(communicator)
+        await communicator.send_to(**frame)
+
+        payload = await communicator.receive_json_from()
+        assert payload["type"] == "error"
+        assert payload["code"] == "invalid_request"
+        if message is not None:
+            assert payload["message"] == message
+
+        await communicator.send_json_to({"op": "unsubscribe", "subscription_id": "sub_1"})
+        payload = await communicator.receive_json_from()
+        assert payload["code"] == "not_subscribed"
+        await communicator.disconnect()
+
+    async_to_sync(run_test)()

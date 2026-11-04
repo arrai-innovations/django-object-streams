@@ -31,6 +31,7 @@ from object_streams.registry import registry as default_registry
 from object_streams.subscriptions import ResyncRequired
 from object_streams.subscriptions import SubscriptionKind
 from object_streams.subscriptions import SubscriptionRequest
+from object_streams.subscriptions import normalize_subscription_id
 from object_streams.transports.base import Transport
 
 
@@ -320,12 +321,17 @@ class SubscriptionSession(_BaseSubscriptionSession):
             if subscription_id is None:
                 self._send_error("invalid_request", "Unsubscribe messages require a subscription_id.")
                 return None
+            try:
+                subscription_id = normalize_subscription_id(subscription_id)
+            except ValueError as exc:
+                self._send_error("invalid_request", str(exc))
+                return None
             rejection = self._subscription_id_rejection(subscription_id)
             if rejection is not None:
                 code, text, details = rejection
                 self._send_error(code, text, details=details)
                 return None
-            return self.unsubscribe(str(subscription_id))
+            return self.unsubscribe(subscription_id)
 
         self._send_error("invalid_request", "Messages require a supported op.")
         return None
@@ -539,12 +545,17 @@ class AsyncSubscriptionSession(_BaseSubscriptionSession):
             if subscription_id is None:
                 await self.transport.send_error("invalid_request", "Unsubscribe messages require a subscription_id.")
                 return None
+            try:
+                subscription_id = normalize_subscription_id(subscription_id)
+            except ValueError as exc:
+                await self.transport.send_error("invalid_request", str(exc))
+                return None
             rejection = self._subscription_id_rejection(subscription_id)
             if rejection is not None:
                 code, text, details = rejection
                 await self.transport.send_error(code, text, details=details)
                 return None
-            return await self.unsubscribe(str(subscription_id))
+            return await self.unsubscribe(subscription_id)
 
         await self.transport.send_error("invalid_request", "Messages require a supported op.")
         return None

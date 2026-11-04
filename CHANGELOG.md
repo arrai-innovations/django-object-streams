@@ -38,6 +38,15 @@ Entry conventions, including which commit types earn an entry, are in
   transaction rather than the one that writes the row after commit. Each call
   costs one extra query. A `transaction_id` passed in `metadata` is replaced.
 
+### Fixed
+
+- A binary frame, invalid or deeply nested JSON, or a subscribe or unsubscribe
+  field of the wrong JSON type now gets an `invalid_request` error and leaves
+  the connection open. Before, the consumer raised and the connection ended
+  with an unhandled exception. A string `ordering` is now rejected rather than
+  split into single characters, and a fractional `cursor` is rejected rather
+  than truncated. Integer `subscription_id` values are echoed back as strings.
+
 ## [0.1.0a0] - 2026-09-02
 
 ### Added

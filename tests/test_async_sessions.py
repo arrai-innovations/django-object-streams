@@ -688,3 +688,42 @@ def test_async_field_limits_set_to_none_are_disabled():
 
     assert session.transport.errors == []
     assert subscription is not None
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"filter": 5}, "Subscription filter must be a JSON object."),
+        ({"ordering": "-created"}, "Subscription ordering must be a list of strings."),
+        ({"cursor": [1]}, "Subscription cursor must be an integer."),
+        ({"subscription_id": {"id": 1}}, "Subscription ids must be strings or integers."),
+    ],
+)
+def test_async_wrongly_typed_subscribe_fields_are_invalid_requests(fields, message):
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    session = make_session(registry)
+
+    subscription = async_to_sync(session.handle_message)(
+        {"op": "subscribe", "kind": "model", "model": "testapp.Note", **fields}
+    )
+
+    assert subscription is None
+    assert session.subscriptions == ()
+    assert session.transport.errors == [{"code": "invalid_request", "message": message, "details": None}]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_async_unsubscribe_with_a_wrongly_typed_subscription_id_is_an_invalid_request():
+    registry = ObjectStreamRegistry()
+    session = make_session(registry)
+
+    assert async_to_sync(session.handle_message)({"op": "unsubscribe", "subscription_id": ["sub"]}) is None
+    assert session.transport.errors == [
+        {
+            "code": "invalid_request",
+            "message": "Subscription ids must be strings or integers.",
+            "details": None,
+        }
+    ]

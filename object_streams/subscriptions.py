@@ -10,7 +10,7 @@ from enum import StrEnum
 from typing import Any
 
 
-__all__ = ("ResyncRequired", "SubscriptionKind", "SubscriptionRequest")
+__all__ = ("ResyncRequired", "SubscriptionKind", "SubscriptionRequest", "normalize_subscription_id")
 
 
 class SubscriptionKind(StrEnum):
@@ -77,16 +77,45 @@ class SubscriptionRequest:
             msg = "Subscribe messages require a model label."
             raise ValueError(msg)
 
+        pk = message.get("pk")
+        if pk is not None and not _is_scalar_id(pk):
+            msg = "Subscription pk must be a string or an integer."
+            raise ValueError(msg)
+
+        filters = message.get("filter") or message.get("filters") or {}
+        if not isinstance(filters, Mapping):
+            msg = "Subscription filter must be a JSON object."
+            raise ValueError(msg)
+
+        ordering = message.get("ordering") or ()
+        if (
+            isinstance(ordering, str)
+            or not isinstance(ordering, Sequence)
+            or not all(isinstance(entry, str) for entry in ordering)
+        ):
+            msg = "Subscription ordering must be a list of strings."
+            raise ValueError(msg)
+
+        shape = message.get("shape") or {}
+        if not isinstance(shape, Mapping):
+            msg = "Subscription shape must be a JSON object."
+            raise ValueError(msg)
+
+        cursor = message.get("cursor")
+        if cursor is not None and not _is_scalar_id(cursor):
+            msg = "Subscription cursor must be an integer."
+            raise ValueError(msg)
+
         return cls(
             kind=message.get("kind", SubscriptionKind.OBJECT),
             model=str(message["model"]),
-            pk=message.get("pk"),
-            filters=message.get("filter") or message.get("filters") or {},
+            pk=pk,
+            filters=filters,
             search=message.get("search"),
-            ordering=message.get("ordering") or (),
-            shape=message.get("shape") or {},
-            cursor=message.get("cursor"),
-            subscription_id=message.get("subscription_id"),
+            ordering=ordering,
+            shape=shape,
+            cursor=cursor,
+            subscription_id=normalize_subscription_id(message.get("subscription_id")),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -109,3 +138,25 @@ class SubscriptionRequest:
         if self.subscription_id is not None:
             value["subscription_id"] = self.subscription_id
         return value
+
+
+def normalize_subscription_id(value: Any) -> str | None:
+    """Return a client-supplied subscription id as a string.
+
+    The id arrives from JSON, so it may be any JSON type. A string or an integer is
+    accepted. Any other type raises ``ValueError``, because the session uses the id
+    as a dictionary key and echoes it back to the client.
+    """
+
+    if value is None:
+        return None
+    if not _is_scalar_id(value):
+        msg = "Subscription ids must be strings or integers."
+        raise ValueError(msg)
+    return str(value)
+
+
+def _is_scalar_id(value: Any) -> bool:
+    """Return whether a JSON value can identify a row, a cursor, or a subscription."""
+
+    return isinstance(value, str) or (isinstance(value, int) and not isinstance(value, bool))

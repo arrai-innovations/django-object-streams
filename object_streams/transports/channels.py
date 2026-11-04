@@ -177,7 +177,12 @@ class ObjectStreamConsumer(AsyncJsonWebsocketConsumer):
         await self._discard_all_groups()
 
     async def receive(self, text_data: str | None = None, bytes_data: bytes | None = None, **kwargs: Any) -> None:
-        """Reject an oversized frame before it is decoded as JSON."""
+        """Decode one frame, answering an oversized, binary, or malformed frame with an error.
+
+        The size check runs before decoding. Channels' own ``receive`` raises on a
+        binary frame and on invalid JSON, which would end the connection with an
+        unhandled exception, so this method decodes the frame itself.
+        """
 
         limit = self.max_message_bytes
         if limit is not None and _frame_size(text_data, bytes_data, limit) > limit:
@@ -187,7 +192,17 @@ class ObjectStreamConsumer(AsyncJsonWebsocketConsumer):
                 details={"limit": limit},
             )
             return
-        await super().receive(text_data=text_data, bytes_data=bytes_data, **kwargs)
+        if not text_data:
+            await self.send_error("invalid_request", "Messages must be JSON text frames.")
+            return
+        try:
+            content = await self.decode_json(text_data)
+        except (ValueError, RecursionError):
+            # ValueError covers JSONDecodeError. RecursionError covers deeply nested
+            # arrays or objects, which fit easily inside the size limit.
+            await self.send_error("invalid_request", "Messages must be valid JSON.")
+            return
+        await self.receive_json(content, **kwargs)
 
     async def receive_json(self, content: Any, **kwargs: Any) -> None:
         if not isinstance(content, Mapping):
