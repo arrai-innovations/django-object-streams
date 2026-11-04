@@ -27,3 +27,10 @@ def test_stream_event_as_dict_is_subscription_relative():
         "changed_fields": ["workflow_state"],
         "fetch": True,
     }
+
+
+def test_stream_event_transaction_id_reads_the_metadata_key():
+    subject = ObjectRef(model="testapp.Note", pk="1")
+
+    assert StreamEvent(subject=subject).transaction_id is None
+    assert StreamEvent(subject=subject, metadata={"transaction_id": 42}).transaction_id == "42"

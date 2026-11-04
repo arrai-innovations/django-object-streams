@@ -9,6 +9,56 @@ Entry conventions, including which commit types earn an entry, are in
 
 ## [Unreleased]
 
+### Added
+
+- Size limits for incoming WebSocket messages. `ObjectStreamConsumer` rejects a
+  frame larger than `max_message_bytes` before decoding it, with a
+  `message_too_large` error. It rejects a `subscription_id`, `pk`, `filter`,
+  `ordering`, or `shape` over its limit with a `field_too_large` error. Each
+  limit is a consumer class attribute, and `None` disables it. The connection
+  stays open after a rejected message.
+- A system check that warns when a declared `ObjectStreamTrigger` is not
+  installed in the database (`object_streams.W001`) or does not match its
+  declaration (`object_streams.W002`). Run it with
+  `manage.py check --database <alias>`.
+- `ObjectStreamTrigger` can map the captured row to another subject, through
+  `subject` for a foreign key path or `subject_content_type` and `subject_pk`
+  for a generic relation. The changed row stays the source. Triggers without a
+  mapping compile to the same SQL as before, so their migrations stay current.
+- `StreamEvent.transaction_id`, which reads `metadata.transaction_id`, and
+  `enqueue_outbox_events`, which schedules several events with one transaction
+  id lookup. The protocol reference documents how a client coalesces the events
+  of one transaction.
+- `create_outbox_events`, which writes several events immediately in one
+  transaction with one transaction id lookup.
+
+### Changed
+
+- The producer and outbox helpers record the Postgres transaction id in
+  `metadata.transaction_id`, as capture triggers already did. The `enqueue_*`
+  helpers read it when they are called, so the value names the caller's
+  transaction rather than the one that writes the row after commit. Each call
+  costs one extra query. A `transaction_id` passed in `metadata` is replaced.
+- `create_source_events` writes all events of one call in one transaction, so
+  they share one transaction id. Outside an atomic block, `enqueue_source_events`
+  and `enqueue_outbox_events` do the same. Before, each event was written in a
+  transaction of its own.
+
+### Fixed
+
+- A binary frame, invalid or deeply nested JSON, or a subscribe or unsubscribe
+  field of the wrong JSON type now gets an `invalid_request` error and leaves
+  the connection open. Before, the consumer raised and the connection ended
+  with an unhandled exception. A string `ordering` is now rejected rather than
+  split into single characters, and a fractional `cursor` is rejected rather
+  than truncated. Integer `subscription_id` values are echoed back as strings.
+- A subscribe message holding an unpaired surrogate, such as `"\ud800"` in a
+  filter value, now gets an `invalid_request` error. Before, the session raised
+  `UnicodeEncodeError` when it measured the value or queried with it.
+- A generated subscription id no longer replaces an active subscription whose
+  client-chosen id has the same value, such as `sub_2`. The generator skips ids
+  that are already active.
+
 ## [0.1.0a0] - 2026-09-02
 
 ### Added

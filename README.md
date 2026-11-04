@@ -186,7 +186,20 @@ Events captured through a proxy use the concrete model's label, so they match a
 registration for ``ThirdPartyOrder`` rather than the proxy itself.
 
 Run `makemigrations` and `migrate` afterwards. A declared trigger that was never
-migrated is not installed, and capture silently does nothing.
+migrated is not installed, and capture silently does nothing. A system check
+reports that case. It queries the database, so Django runs it only when a
+command asks for database checks:
+
+```console
+python manage.py check --database default
+```
+
+The check warns with `object_streams.W001` when a declared capture trigger is
+not installed, and with `object_streams.W002` when the installed trigger does
+not match its declaration. It looks only at `ObjectStreamTrigger` triggers. It
+skips a database that has unapplied migrations, because one of them may install
+the trigger, so run it after `migrate`. Add it to a deploy step or a health
+check rather than relying on `migrate` to show it.
 
 Every captured row records the Postgres transaction id in `metadata`:
 
@@ -197,6 +210,64 @@ Every captured row records the Postgres transaction id in `metadata`:
 Events written by one database transaction share it, so a client can coalesce
 them into a single refetch instead of one per row. This is not an application
 action identifier: one request or audit context may span several transactions.
+The producers record the same value, as described under
+[Coalescing by transaction](#coalescing-by-transaction).
+
+By default the changed row is its own subject. When subscribers care about a
+different object, map the subject. The changed row stays the source. A child
+row can name its parent through a foreign key path:
+
+```python
+class OrderLine(models.Model):
+    order = models.ForeignKey(CustomerOrder, on_delete=models.CASCADE)
+
+    class Meta:
+        triggers = [ObjectStreamTrigger(name="order_line_stream", subject="order")]
+```
+
+A generic state row can name a content type and an object id. Here the content
+type lives on a definition row that the state row points at:
+
+```python
+class StateRecord(models.Model):
+    definition = models.ForeignKey(StateDefinition, on_delete=models.CASCADE)
+    object_id = models.CharField(max_length=64)
+    state = models.CharField(max_length=32)
+
+    class Meta:
+        triggers = [
+            ObjectStreamTrigger(
+                name="state_record_stream",
+                facet="workflow_state",
+                subject_content_type="definition__content_type",
+                subject_pk="object_id",
+            )
+        ]
+```
+
+`subject` is a path of foreign keys, such as `"order"` or `"order__customer"`.
+`subject_content_type` is a path that ends in a foreign key to `ContentType`, and
+`subject_pk` is a path to the column that holds the subject's primary key. Give
+those two together. Every name in a path except the last must be a foreign key.
+Each hop reads the related row with one lookup on its key, at write time, inside
+the same transaction.
+
+A mapped trigger behaves differently from the default one in these ways:
+
+- `op` is always `updated`, because inserting, updating, or deleting the changed
+  row does not create or delete the subject. Membership is still evaluated
+  against the subject, so a subject that leaves a filter is still `removed`.
+- A delete is mapped through the old row.
+- An update that moves the row to another subject, by changing `object_id` or a
+  foreign key in the path, writes one event for the old subject and one for the
+  new subject.
+- A subject whose content type or primary key is null is skipped. So is a
+  subject whose path passes through a row that is already deleted, such as a
+  definition row removed before the state rows that point at it. A
+  database-level cascade (`on_delete=models.DB_CASCADE`) deletes the parent
+  first, so with `subject="order__customer"` the cascaded delete of an order's
+  lines writes nothing for the customer. An ORM `CASCADE` deletes the lines
+  first and is captured.
 
 The trigger sends its own `pg_notify`, which is transactional: the notification
 arrives when the transaction commits and is discarded when it rolls back. It
@@ -211,10 +282,9 @@ as `OBJECT_STREAMS_NOTIFY_CHANNEL`. Set both when you override either.
 
 Three limits are worth knowing:
 
-- The captured row is its own subject, which suits models whose own writes are
-  what subscribers care about. A source whose subject is a different object, such
-  as a workflow state row pointing at the object it governs, needs its subject
-  mapping written as SQL or left to a Python producer.
+- A subject mapping is limited to foreign key paths and a content type and
+  primary key pair. A subject that needs other logic to find, such as a filtered
+  or computed lookup, still needs a Python producer.
 - `changed_fields` reports database column names, so a foreign key appears as
   `supplier_id` rather than `supplier`.
 - Composite primary keys are not supported. Trigger compilation raises a focused
@@ -363,7 +433,13 @@ cursor the client requested.
 }
 ```
 
-`op` is the source operation: `created`, `updated`, or `deleted`.
+`op` is the source operation: `created`, `updated`, or `deleted`. A trigger
+with a subject mapping always reports `updated`.
+
+`metadata` is present when the outbox row carries metadata. Its
+`transaction_id` key holds the Postgres transaction id that committed the
+change. Capture triggers and the producer helpers set it. It is also available
+as `StreamEvent.transaction_id`.
 
 `list_action` is the effect on this subscription:
 
@@ -376,6 +452,39 @@ cursor the client requested.
 
 Object subscriptions can usually ignore `list_action`. Filter and model
 subscriptions need it. Events with no effect on a subscription are not sent.
+
+#### Coalescing by transaction
+
+Events with the same `metadata.transaction_id` were committed by one database
+transaction. A client can collect them and refetch each subject once, instead
+of once per event.
+
+What is guaranteed:
+
+- Two events with the same `transaction_id` came from the same transaction.
+- Rows written by a capture trigger or by `create_source_events` commit with the
+  change, so the events of one transaction become visible together.
+- The producers record the transaction that called them, not the later one that
+  writes the row. `enqueue_source_events` and `enqueue_outbox_event` read the id
+  when they run, and `create_source_events` and `create_outbox_event` read it in
+  the transaction that writes the row.
+
+What is not guaranteed:
+
+- The events of one transaction are not always adjacent in cursor order. Other
+  transactions' events can fall between them.
+- `enqueue_source_events` writes each row after the commit, so the events of one
+  transaction can arrive spread over time. A client that coalesces them needs a
+  short wait, not a signal that the transaction is complete.
+- A transaction is not a request or a user action. One action may commit several
+  transactions, and a client cannot tell from `transaction_id` that it is done.
+- A subscription receives only the events that affect it, so it cannot count
+  how many events a transaction wrote.
+- An event without `transaction_id`, such as a row written before this field
+  was recorded, cannot be coalesced. Treat it on its own.
+
+`transaction_id` is a reserved metadata key. The outbox helpers replace a value
+passed in `metadata` under that key.
 
 `resync_required` is a subscription-level message for cases where the server
 cannot safely compute the delta. It carries no subject. The client should
@@ -410,7 +519,9 @@ carries structured data, such as FilterSet validation errors.
 
 | `code` | Cause |
 |---|---|
-| `invalid_request` | Unsupported `op`, missing `model`, missing `subscription_id`, or a non-object JSON message. |
+| `invalid_request` | Unsupported `op`, missing `model`, missing `subscription_id`, a binary frame, invalid JSON, a non-object JSON message, or a field of the wrong type. `filter` and `shape` must be objects, `ordering` a list of strings, `cursor` an integer, and `pk` and `subscription_id` strings or integers. |
+| `message_too_large` | The raw message is larger than `max_message_bytes`. `details` carries `limit`. |
+| `field_too_large` | A field is larger than its limit. `details` carries `field` and `limit`. |
 | `invalid_cursor` | The requested cursor is newer than the outbox. |
 | `invalid_filter` | FilterSet validation failed. `details` carries the errors. |
 | `not_found` | An object subscription target does not exist or is not visible. |
@@ -529,12 +640,37 @@ The consumer bounds this with three class attributes:
 | `max_member_pks` | `10000` | Objects one subscription may match. `None` disables the limit. |
 | `replay_limit` | `1000` | Object replay events sent before falling back to `resync_required`. |
 
+Further class attributes bound the size of each incoming message and its
+fields. A message over a limit gets an `error` response and is otherwise
+ignored. `None` disables a limit.
+
+| Attribute | Default | Effect |
+|---|---|---|
+| `max_message_bytes` | `65536` | Size of the raw WebSocket frame in UTF-8 bytes, checked before JSON decoding. Rejected with `message_too_large`. |
+| `max_subscription_id_length` | `128` | Characters in `subscription_id`, on `subscribe` and `unsubscribe`. |
+| `max_pk_length` | `255` | Characters in `pk`. |
+| `max_filter_keys` | `32` | Keys in `filter` or `filters`. |
+| `max_filter_value_bytes` | `4096` | Size of each filter value, measured as compact JSON in UTF-8 bytes. |
+| `max_ordering_length` | `8` | Entries in `ordering`. |
+| `max_shape_bytes` | `4096` | Size of `shape`, measured as compact JSON in UTF-8 bytes. |
+
+The field limits are rejected with `field_too_large`. A field limit rejects the
+whole message, so no subscription is created.
+
+An oversized message does not close the connection. By the time the consumer
+sees the frame, the ASGI server has already read it into memory, so closing
+saves nothing for that frame, and skipping the JSON decode is the costly part
+that the limit avoids. The ASGI server's own frame limit still applies above
+this one. Uvicorn, for example, closes the socket for a frame larger than its
+`--ws-max-size`. Keep `max_message_bytes` below your server's limit.
+
 Subclass the consumer to change them:
 
 ```python
 class WideObjectStreamConsumer(ObjectStreamConsumer):
     max_subscriptions = 500
     max_member_pks = 50000
+    max_filter_value_bytes = 16384
 ```
 
 These are backstops, not a substitute for authentication. Raise them

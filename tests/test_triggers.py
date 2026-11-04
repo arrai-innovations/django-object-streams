@@ -119,6 +119,19 @@ def test_a_bulk_update_writes_one_event_per_row():
     assert {row.metadata["transaction_id"] for row in written} == {written[0].metadata["transaction_id"]}
 
 
+@pytest.mark.django_db
+def test_a_bulk_create_writes_one_created_event_per_row():
+    """bulk_create() bypasses save() and signals entirely, but not the trigger."""
+    notes = TriggeredNote.objects.bulk_create(
+        [TriggeredNote(title="One"), TriggeredNote(title="Two"), TriggeredNote(title="Three")]
+    )
+
+    rows = outbox_rows()
+    assert [row.op for row in rows] == ["created", "created", "created"]
+    assert [row.subject_object_id for row in rows] == [str(note.pk) for note in notes]
+    assert len({row.metadata["transaction_id"] for row in rows}) == 1
+
+
 @pytest.mark.django_db(transaction=True)
 def test_a_rolled_back_write_leaves_no_event():
     with pytest.raises(RuntimeError), transaction.atomic():

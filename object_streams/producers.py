@@ -14,8 +14,8 @@ from object_streams.events import ObjectRef
 from object_streams.events import SourceRef
 from object_streams.events import StreamEvent
 from object_streams.models import ObjectStreamEvent
-from object_streams.outbox import create_outbox_event
-from object_streams.outbox import enqueue_outbox_event
+from object_streams.outbox import create_outbox_events
+from object_streams.outbox import enqueue_outbox_events
 from object_streams.registry import ObjectStreamRegistry
 from object_streams.registry import registry as default_registry
 
@@ -76,20 +76,21 @@ def create_source_events(
     registry: ObjectStreamRegistry = default_registry,
     using: str | None = None,
 ) -> tuple[ObjectStreamEvent, ...]:
-    """Create outbox rows for a changed source instance immediately."""
+    """Create outbox rows for a changed source instance immediately.
 
-    return tuple(
-        create_outbox_event(event, notify=notify, using=using)
-        for event in build_source_events(
-            instance,
-            op=op,
-            changed_fields=changed_fields,
-            before=before,
-            after=after,
-            metadata=metadata,
-            registry=registry,
-        )
+    The rows are written in one transaction, so they share one transaction id.
+    """
+
+    events = build_source_events(
+        instance,
+        op=op,
+        changed_fields=changed_fields,
+        before=before,
+        after=after,
+        metadata=metadata,
+        registry=registry,
     )
+    return create_outbox_events(events, notify=notify, using=using)
 
 
 def enqueue_source_events(
@@ -104,7 +105,11 @@ def enqueue_source_events(
     registry: ObjectStreamRegistry = default_registry,
     using: str | None = None,
 ) -> tuple[StreamEvent, ...]:
-    """Schedule outbox rows for a changed source instance after commit."""
+    """Schedule outbox rows for a changed source instance after commit.
+
+    The id of the caller's transaction is read when this runs, so the rows record
+    the transaction that made the change rather than the one that writes them.
+    """
 
     events = build_source_events(
         instance,
@@ -115,8 +120,7 @@ def enqueue_source_events(
         metadata=metadata,
         registry=registry,
     )
-    for event in events:
-        enqueue_outbox_event(event, using=using, notify=notify)
+    enqueue_outbox_events(events, using=using, notify=notify)
     return events
 
 

@@ -250,6 +250,7 @@ def test_async_session_object_replay_sends_subject_events_after_cursor():
             "list_action": "changed",
             "changed_fields": ["title"],
             "fetch": True,
+            "metadata": {"transaction_id": row.metadata["transaction_id"]},
         }
     ]
 
@@ -583,3 +584,184 @@ def test_async_subscription_matching_too_many_objects_is_rejected():
             "details": None,
         }
     ]
+
+
+TEST_FIELD_LIMITS = {
+    "max_subscription_id_length": 8,
+    "max_pk_length": 4,
+    "max_filter_keys": 2,
+    "max_filter_value_bytes": 8,
+    "max_ordering_length": 2,
+    "max_shape_bytes": 16,
+}
+OVERSIZED_SUBSCRIBE_FIELDS = [
+    pytest.param({"subscription_id": "s" * 9}, "subscription_id", 8, id="subscription_id"),
+    pytest.param({"kind": "object", "pk": "12345"}, "pk", 4, id="pk"),
+    pytest.param({"kind": "filter", "filter": {"a": 1, "b": 2, "c": 3}}, "filter", 2, id="filter-keys"),
+    pytest.param({"kind": "filter", "filters": {"a": 1, "b": 2, "c": 3}}, "filter", 2, id="filters-alias-keys"),
+    pytest.param({"kind": "filter", "filter": {"title": "x" * 7}}, "filter", 8, id="filter-value"),
+    pytest.param({"kind": "filter", "filter": {"title": "\u00e9" * 4}}, "filter", 8, id="filter-value-utf8"),
+    pytest.param({"kind": "model", "ordering": ["a", "b", "c"]}, "ordering", 2, id="ordering"),
+    pytest.param({"kind": "model", "shape": {"fields": ["title", "body"]}}, "shape", 16, id="shape"),
+]
+
+
+def make_limited_session(registry, **limits):
+    return AsyncSubscriptionSession(
+        user=None,
+        transport=RecordingTransport(),
+        registry=registry,
+        **{**TEST_FIELD_LIMITS, **limits},
+    )
+
+
+@pytest.mark.parametrize(("fields", "field_name", "limit"), OVERSIZED_SUBSCRIBE_FIELDS)
+def test_async_subscribe_field_over_its_limit_is_rejected(fields, field_name, limit):
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    session = make_limited_session(registry)
+
+    message = {"op": "subscribe", "kind": "model", "model": "testapp.Note", **fields}
+    assert async_to_sync(session.handle_message)(message) is None
+
+    assert session.subscriptions == ()
+    assert session.transport.subscribed == []
+    [error] = session.transport.errors
+    assert error["code"] == "field_too_large"
+    assert error["details"] == {"field": field_name, "limit": limit}
+
+
+def test_async_unsubscribe_with_an_oversized_subscription_id_is_rejected():
+    session = make_limited_session(ObjectStreamRegistry())
+
+    assert async_to_sync(session.handle_message)({"op": "unsubscribe", "subscription_id": "s" * 9}) is None
+
+    assert session.transport.unsubscribed == []
+    assert session.transport.errors == [
+        {
+            "code": "field_too_large",
+            "message": "Field 'subscription_id' exceeds 8 characters.",
+            "details": {"field": "subscription_id", "limit": 8},
+        }
+    ]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_async_subscribe_fields_at_their_limits_are_accepted():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    session = make_limited_session(registry)
+
+    subscription = async_to_sync(session.handle_message)(
+        {
+            "op": "subscribe",
+            "kind": "filter",
+            "model": "testapp.Note",
+            "subscription_id": "s" * 8,
+            "filter": {"title": "Open", "id": 1},
+            "ordering": ["title", "id"],
+            "shape": {"f": "abcdefgh"},
+        }
+    )
+
+    assert session.transport.errors == []
+    assert subscription.subscription_id == "s" * 8
+
+
+@pytest.mark.django_db(transaction=True)
+def test_async_field_limits_set_to_none_are_disabled():
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    session = make_limited_session(registry, **dict.fromkeys(TEST_FIELD_LIMITS))
+
+    subscription = async_to_sync(session.handle_message)(
+        {
+            "op": "subscribe",
+            "kind": "filter",
+            "model": "testapp.Note",
+            "subscription_id": "s" * 200,
+            "filter": {"title": "x" * 5000},
+            "ordering": ["title"] * 20,
+            "shape": {"fields": ["title"] * 1000},
+        }
+    )
+
+    assert session.transport.errors == []
+    assert subscription is not None
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"filter": 5}, "Subscription filter must be a JSON object."),
+        ({"ordering": "-created_at"}, "Subscription ordering must be a list of strings."),
+        ({"cursor": [1]}, "Subscription cursor must be an integer."),
+        ({"subscription_id": {"id": 1}}, "Subscription ids must be strings or integers."),
+    ],
+)
+def test_async_wrongly_typed_subscribe_fields_are_invalid_requests(fields, message):
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    session = make_session(registry)
+
+    subscription = async_to_sync(session.handle_message)(
+        {"op": "subscribe", "kind": "model", "model": "testapp.Note", **fields}
+    )
+
+    assert subscription is None
+    assert session.subscriptions == ()
+    assert session.transport.errors == [{"code": "invalid_request", "message": message, "details": None}]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_async_unsubscribe_with_a_wrongly_typed_subscription_id_is_an_invalid_request():
+    registry = ObjectStreamRegistry()
+    session = make_session(registry)
+
+    assert async_to_sync(session.handle_message)({"op": "unsubscribe", "subscription_id": ["sub"]}) is None
+    assert session.transport.errors == [
+        {
+            "code": "invalid_request",
+            "message": "Subscription ids must be strings or integers.",
+            "details": None,
+        }
+    ]
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    "fields",
+    [
+        pytest.param({"kind": "filter", "filter": {"title": "\ud800"}}, id="filter"),
+        pytest.param({"kind": "model", "shape": {"fields": ["\udfff"]}}, id="shape"),
+        pytest.param({"kind": "object", "pk": "\ud800"}, id="pk"),
+    ],
+)
+def test_async_unpaired_surrogates_are_invalid_requests(fields):
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter)
+    session = make_limited_session(registry)
+
+    message = {"op": "subscribe", "kind": "model", "model": "testapp.Note", **fields}
+    assert async_to_sync(session.handle_message)(message) is None
+
+    assert session.subscriptions == ()
+    assert session.transport.errors == [
+        {"code": "invalid_request", "message": "Messages must not contain unpaired surrogates.", "details": None}
+    ]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_async_generated_subscription_ids_skip_an_id_the_client_chose():
+    registry = ObjectStreamRegistry()
+    registry.register(Note)
+    session = make_session(registry)
+    message = {"op": "subscribe", "kind": "model", "model": "testapp.Note"}
+
+    async_to_sync(session.handle_message)({**message, "subscription_id": "sub_2"})
+    async_to_sync(session.handle_message)(message)
+    async_to_sync(session.handle_message)(message)
+
+    assert session.transport.errors == []
+    assert [active.subscription_id for active in session.subscriptions] == ["sub_2", "sub_1", "sub_3"]
