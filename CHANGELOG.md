@@ -9,6 +9,8 @@ Entry conventions, including which commit types earn an entry, are in
 
 ## [Unreleased]
 
+## [0.1.0a1] - 2026-11-04
+
 ### Added
 
 - Size limits for incoming WebSocket messages. `ObjectStreamConsumer` rejects a
@@ -89,5 +91,6 @@ Entry conventions, including which commit types earn an entry, are in
 - Per-connection limits for active subscriptions, subscription membership size,
   object replay, and the outbox id dedupe window.
 
-[unreleased]: https://github.com/arrai-innovations/django-object-streams/compare/0.1.0a0...main
+[unreleased]: https://github.com/arrai-innovations/django-object-streams/compare/0.1.0a1...main
+[0.1.0a1]: https://github.com/arrai-innovations/django-object-streams/releases/tag/0.1.0a1
 [0.1.0a0]: https://github.com/arrai-innovations/django-object-streams/releases/tag/0.1.0a0
