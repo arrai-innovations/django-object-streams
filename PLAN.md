@@ -76,8 +76,9 @@ rejected, or moved here, and was removed.
   The candidate shape is an `ordering_changed` boolean alongside
   `changed_fields`, so a client can recompute list placement or refetch the
   affected page rather than guess from `changed_fields` alone.
-- [ ] Next: surface the capture transaction id on `StreamEvent` and document how a
-  client coalesces the events of one transaction.
+- [x] Done: surface the capture transaction id on `StreamEvent`, record it from
+  the producers, and document how a client coalesces the events of one
+  transaction.
 - [ ] Later: decide whether shape parameters remain transport hints or become a
   payload adapter contract. Subscription parameters divide into four kinds:
   membership (`filter`, `search`) decides what belongs in the set, shape
@@ -113,7 +114,7 @@ rejected, or moved here, and was removed.
   with a bounded query before the pk set is materialized.
 - [x] Done: reject a `subscription_id` that is already active, and discard the
   previous Channels groups when subscription groups are replaced.
-- [ ] Next: inbound message validation limits for message size,
+- [x] Done: inbound message validation limits for message size,
   `subscription_id` length, `pk` length, filter key count and value size,
   `ordering` length, and `shape` size.
 - [ ] Later: document that registered FilterSets are a cost boundary, and that
@@ -143,10 +144,11 @@ rejected, or moved here, and was removed.
   `OBJECT_STREAMS_RETENTION_DAYS`, and `OBJECT_STREAMS_RETENTION_MAX_ROWS`.
 - [ ] Later: report pruning progress and retention lag from the pruning
   command.
-- [ ] Next: system check that reports a declared capture trigger which was never
-  migrated, so capture cannot silently do nothing.
-- [ ] Later: express subject mapping in SQL so a source whose subject is another
-  object can be captured by trigger rather than by a Python producer.
+- [x] Done: system check that reports a declared capture trigger which was never
+  migrated or is outdated, so capture cannot silently do nothing.
+- [x] Done: express subject mapping in SQL so a source whose subject is another
+  object can be captured by trigger rather than by a Python producer. Foreign
+  key paths and content type and primary key pairs are supported.
 - [ ] Later: add structured logging around listener wakeups, fanout, and
   malformed notifications.
 - [ ] Later: add metrics hooks for outbox lag, fanout count, and active
@@ -162,8 +164,10 @@ rejected, or moved here, and was removed.
   configuration.
 - [x] Done: retention, pruning, pruned-cursor replay, and public import surface
   coverage.
-- [x] Done: trigger capture coverage for inserts, updates, deletes, bulk writes,
-  rollback, notification, and transaction grouping.
+- [x] Done: trigger capture coverage for inserts, updates, deletes, bulk writes
+  including `bulk_create()`, rollback, notification, and transaction grouping.
+- [x] Done: mapped trigger capture coverage for generic state rows and child
+  rows, including deletes, subject moves, and `changed_fields`.
 - [x] Done: concurrent reverse-commit coverage proving that delivery cursor order
   does not depend on pre-commit sequence allocation.
 - [x] Done: subscription handshake catch-up coverage for events committed while
