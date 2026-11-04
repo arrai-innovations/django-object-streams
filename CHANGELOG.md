@@ -21,6 +21,10 @@ Entry conventions, including which commit types earn an entry, are in
   installed in the database (`object_streams.W001`) or does not match its
   declaration (`object_streams.W002`). Run it with
   `manage.py check --database <alias>`.
+- `ObjectStreamTrigger` can map the captured row to another subject, through
+  `subject` for a foreign key path or `subject_content_type` and `subject_pk`
+  for a generic relation. The changed row stays the source. Triggers without a
+  mapping compile to the same SQL as before, so their migrations stay current.
 - `StreamEvent.transaction_id`, which reads `metadata.transaction_id`, and
   `enqueue_outbox_events`, which schedules several events with one transaction
   id lookup. The protocol reference documents how a client coalesces the events

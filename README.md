@@ -213,6 +213,58 @@ action identifier: one request or audit context may span several transactions.
 The producers record the same value, as described under
 [Coalescing by transaction](#coalescing-by-transaction).
 
+By default the changed row is its own subject. When subscribers care about a
+different object, map the subject. The changed row stays the source. A child
+row can name its parent through a foreign key path:
+
+```python
+class OrderLine(models.Model):
+    order = models.ForeignKey(CustomerOrder, on_delete=models.CASCADE)
+
+    class Meta:
+        triggers = [ObjectStreamTrigger(name="order_line_stream", subject="order")]
+```
+
+A generic state row can name a content type and an object id. Here the content
+type lives on a definition row that the state row points at:
+
+```python
+class StateRecord(models.Model):
+    definition = models.ForeignKey(StateDefinition, on_delete=models.CASCADE)
+    object_id = models.CharField(max_length=64)
+    state = models.CharField(max_length=32)
+
+    class Meta:
+        triggers = [
+            ObjectStreamTrigger(
+                name="state_record_stream",
+                facet="workflow_state",
+                subject_content_type="definition__content_type",
+                subject_pk="object_id",
+            )
+        ]
+```
+
+`subject` is a path of foreign keys, such as `"order"` or `"order__customer"`.
+`subject_content_type` is a path that ends in a foreign key to `ContentType`, and
+`subject_pk` is a path to the column that holds the subject's primary key. Give
+those two together. Every name in a path except the last must be a foreign key.
+Each hop reads the related row with one lookup on its key, at write time, inside
+the same transaction.
+
+A mapped trigger behaves differently from the default one in these ways:
+
+- `op` is always `updated`, because inserting, updating, or deleting the changed
+  row does not create or delete the subject. Membership is still evaluated
+  against the subject, so a subject that leaves a filter is still `removed`.
+- A delete is mapped through the old row.
+- An update that moves the row to another subject, by changing `object_id` or a
+  foreign key in the path, writes one event for the old subject and one for the
+  new subject.
+- A subject whose content type or primary key is null is skipped. So is a
+  subject whose path passes through a row that is already deleted, such as a
+  definition row removed before the state rows that point at it.
+
 The trigger sends its own `pg_notify`, which is transactional: the notification
 arrives when the transaction commits and is discarded when it rolls back. It
 reads the channel from a database setting so that changing it needs no migration:
@@ -226,10 +278,9 @@ as `OBJECT_STREAMS_NOTIFY_CHANNEL`. Set both when you override either.
 
 Three limits are worth knowing:
 
-- The captured row is its own subject, which suits models whose own writes are
-  what subscribers care about. A source whose subject is a different object, such
-  as a workflow state row pointing at the object it governs, needs its subject
-  mapping written as SQL or left to a Python producer.
+- A subject mapping is limited to foreign key paths and a content type and
+  primary key pair. A subject that needs other logic to find, such as a filtered
+  or computed lookup, still needs a Python producer.
 - `changed_fields` reports database column names, so a foreign key appears as
   `supplier_id` rather than `supplier`.
 - Composite primary keys are not supported. Trigger compilation raises a focused
@@ -378,7 +429,8 @@ cursor the client requested.
 }
 ```
 
-`op` is the source operation: `created`, `updated`, or `deleted`.
+`op` is the source operation: `created`, `updated`, or `deleted`. A trigger
+with a subject mapping always reports `updated`.
 
 `metadata` is present when the outbox row carries metadata. Its
 `transaction_id` key holds the Postgres transaction id that committed the
