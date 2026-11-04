@@ -2,6 +2,7 @@ import pytest
 from django.apps import apps
 from django.core import checks
 from django.db import connection
+from django.db import router
 
 from object_streams.checks import check_capture_triggers
 from tests.testapp.models import ProtectedNote
@@ -68,6 +69,20 @@ def test_the_check_is_limited_to_the_requested_apps():
     capture_trigger().uninstall(TriggeredNote)
 
     assert check_capture_triggers(app_configs=[apps.get_app_config("auth")], databases=["default"]) == []
+
+
+class NoTestappRouter:
+    def allow_migrate(self, db, app_label, **hints):
+        return app_label != "testapp"
+
+
+@pytest.mark.django_db
+def test_a_model_the_router_keeps_off_the_database_is_not_reported(monkeypatch):
+    """pgtrigger reports such a trigger as unallowed rather than uninstalled."""
+    capture_trigger().uninstall(TriggeredNote)
+    monkeypatch.setattr(router, "routers", [NoTestappRouter()])
+
+    assert check_capture_triggers(databases=["default"]) == []
 
 
 @pytest.mark.django_db
