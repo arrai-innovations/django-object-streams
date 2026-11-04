@@ -1,3 +1,4 @@
+import pgtrigger
 from django.db import models
 
 from object_streams.triggers import ObjectStreamTrigger
@@ -15,6 +16,15 @@ class TriggeredNote(models.Model):
 
     class Meta:
         triggers = [ObjectStreamTrigger(name="triggered_note_stream")]
+
+
+class ProtectedNote(models.Model):
+    """Carries a pgtrigger trigger that is not a capture trigger."""
+
+    title = models.CharField(max_length=100)
+
+    class Meta:
+        triggers = [pgtrigger.Protect(name="protected_note_delete", operation=pgtrigger.Delete)]
 
 
 class ProxyTriggerTarget(models.Model):

@@ -12,3 +12,6 @@ class ObjectStreamsConfig(AppConfig):
     # The outbox cursor must stay a bigserial regardless of the host project's
     # DEFAULT_AUTO_FIELD.
     default_auto_field = "django.db.models.BigAutoField"
+
+    def ready(self):
+        from object_streams import checks  # noqa: F401

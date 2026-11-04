@@ -17,6 +17,10 @@ Entry conventions, including which commit types earn an entry, are in
   `ordering`, or `shape` over its limit with a `field_too_large` error. Each
   limit is a consumer class attribute, and `None` disables it. The connection
   stays open after a rejected message.
+- A system check that warns when a declared `ObjectStreamTrigger` is not
+  installed in the database (`object_streams.W001`) or does not match its
+  declaration (`object_streams.W002`). Run it with
+  `manage.py check --database <alias>`.
 
 ## [0.1.0a0] - 2026-09-02
 

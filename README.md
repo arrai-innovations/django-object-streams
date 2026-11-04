@@ -186,7 +186,20 @@ Events captured through a proxy use the concrete model's label, so they match a
 registration for ``ThirdPartyOrder`` rather than the proxy itself.
 
 Run `makemigrations` and `migrate` afterwards. A declared trigger that was never
-migrated is not installed, and capture silently does nothing.
+migrated is not installed, and capture silently does nothing. A system check
+reports that case. It queries the database, so Django runs it only when a
+command asks for database checks:
+
+```console
+python manage.py check --database default
+```
+
+The check warns with `object_streams.W001` when a declared capture trigger is
+not installed, and with `object_streams.W002` when the installed trigger does
+not match its declaration. It looks only at `ObjectStreamTrigger` triggers. It
+skips a database that has unapplied migrations, because one of them may install
+the trigger, so run it after `migrate`. Add it to a deploy step or a health
+check rather than relying on `migrate` to show it.
 
 Every captured row records the Postgres transaction id in `metadata`:
 
