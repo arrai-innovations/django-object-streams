@@ -324,6 +324,12 @@ context as normal Django view filters. Clients may send either `filter` or
 `filters`. An empty filter object is valid and means no FilterSet constraints
 beyond visibility. Object and model subscriptions use visibility only.
 
+The visibility policy's `get_queryset` receives `action="read"` for object
+subscriptions and `action="list"` for filter and model subscriptions, so a
+policy can apply the same permission as the detail or list endpoint that the
+subscription mirrors. The session uses the same action when it creates the
+subscription and when it checks each event's membership.
+
 ## Public Import Surface
 
 The package root exports only names that are safe to import before
