@@ -232,14 +232,17 @@ class _BaseSubscriptionSession:
         registration: ObjectStreamRegistration,
         request: SubscriptionRequest,
     ) -> models.QuerySet:
+        # An object subscription mirrors a detail view; filter and model subscriptions mirror a list.
+        action = "read" if request.kind == SubscriptionKind.OBJECT else "list"
         if request.kind == SubscriptionKind.FILTER:
             queryset = registration.get_queryset(
                 self.user,
                 request.filters,
+                action=action,
                 request=self.request,
             )
         else:
-            queryset = registration.visibility.get_queryset(self.user, registration.model, action="read")
+            queryset = registration.visibility.get_queryset(self.user, registration.model, action=action)
         if request.kind == SubscriptionKind.OBJECT:
             queryset = queryset.filter(pk=request.pk)
         return queryset

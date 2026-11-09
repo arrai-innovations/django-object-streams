@@ -9,6 +9,15 @@ Entry conventions, including which commit types earn an entry, are in
 
 ## [Unreleased]
 
+### Changed
+
+- Filter and model subscriptions now call the visibility policy with
+  `action="list"`. Object subscriptions still pass `action="read"`. A policy
+  can then apply the permission of the list or detail endpoint that the
+  subscription mirrors. A policy that branches on `action` and handles only
+  `"read"` must also handle `"list"`, or treat it as `"read"` to keep its
+  previous behavior.
+
 ## [0.1.0a1] - 2026-11-04
 
 ### Added

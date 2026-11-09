@@ -17,7 +17,11 @@ __all__ = (
 
 class VisibilityPolicy(Protocol):
     def get_queryset(self, user: Any, model: type[models.Model], action: str = "read") -> models.QuerySet:
-        """Return the queryset this user can see for the model and action."""
+        """Return the queryset this user can see for the model and action.
+
+        Sessions pass ``"read"`` for object subscriptions and ``"list"`` for filter
+        and model subscriptions.
+        """
 
 
 class AllowAllVisibilityPolicy:

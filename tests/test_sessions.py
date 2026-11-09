@@ -1138,3 +1138,103 @@ def test_an_object_pk_in_a_non_canonical_form_receives_replay_and_live_events(pk
     assert subscription.pk == str(note.pk)
     assert len(session.transport.events) == len(["replayed", "live"])
     assert len(live) == 1
+
+
+class RecordingActionPolicy:
+    def __init__(self):
+        self.actions = []
+
+    def get_queryset(self, user, model, action="read"):
+        self.actions.append(action)
+        return model._default_manager.all()
+
+
+class HiddenFromListPolicy:
+    """Allow every row for "read" and hide rows titled "Hidden" for any other action."""
+
+    def get_queryset(self, user, model, action="read"):
+        queryset = model._default_manager.all()
+        if action == "read":
+            return queryset
+        return queryset.exclude(title="Hidden")
+
+
+class ReadOnlyActionPolicy:
+    """A policy written before subscriptions passed any action but "read"."""
+
+    def get_queryset(self, user, model, action="read"):
+        return model._default_manager.filter(title__startswith="Open")
+
+
+def updated_event(note):
+    return create_outbox_event(
+        StreamEvent(
+            subject=ObjectRef.from_instance(note),
+            op=EventOperation.UPDATED,
+            changed_fields=("title",),
+        )
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("kind", "expected_action"),
+    [
+        ("object", "read"),
+        ("filter", "list"),
+        ("model", "list"),
+    ],
+)
+def test_visibility_receives_the_action_for_the_subscription_kind(kind, expected_action):
+    note = Note.objects.create(title="Open")
+    policy = RecordingActionPolicy()
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter, visibility=policy)
+    session = make_session(registry)
+    message = {"op": "subscribe", "kind": kind, "model": "testapp.Note"}
+    if kind == "object":
+        message["pk"] = note.pk
+
+    assert session.handle_message(message) is not None
+    session.publish(updated_event(note))
+
+    assert len(session.transport.events) == 1
+    assert len(policy.actions) > 1
+    assert set(policy.actions) == {expected_action}
+
+
+@pytest.mark.django_db
+def test_a_row_hidden_from_lists_reaches_object_subscriptions_only():
+    hidden = Note.objects.create(title="Hidden")
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter, visibility=HiddenFromListPolicy())
+    session = make_session(registry)
+    for message in (
+        {"op": "subscribe", "kind": "object", "model": "testapp.Note", "pk": hidden.pk, "subscription_id": "object"},
+        {"op": "subscribe", "kind": "filter", "model": "testapp.Note", "subscription_id": "filter"},
+        {"op": "subscribe", "kind": "model", "model": "testapp.Note", "subscription_id": "model"},
+    ):
+        assert session.handle_message(message) is not None
+
+    session.publish(updated_event(hidden))
+
+    assert [event.subscription_id for event in session.transport.events] == ["object"]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("kind", ["object", "filter", "model"])
+def test_a_policy_that_only_declares_action_still_scopes_subscriptions(kind):
+    visible = Note.objects.create(title="Open")
+    invisible = Note.objects.create(title="Closed")
+    registry = ObjectStreamRegistry()
+    registry.register(Note, filterset=NoteFilter, visibility=ReadOnlyActionPolicy())
+    session = make_session(registry)
+    message = {"op": "subscribe", "kind": kind, "model": "testapp.Note"}
+    if kind == "object":
+        message["pk"] = visible.pk
+
+    assert session.handle_message(message) is not None
+    session.publish(updated_event(invisible))
+    session.publish(updated_event(visible))
+
+    assert [event.subject.pk for event in session.transport.events] == [str(visible.pk)]
